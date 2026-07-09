@@ -1,0 +1,85 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information with display name, avatar, and VIP status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "isPro": { "type": "boolean" },
+        "proKey": { "type": "string" },
+        "proActivatedAt": { "type": "number" },
+        "proExpiresAt": { "type": "number" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Song": {
+      "title": "Song",
+      "description": "A music track uploaded to the platform",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "artist": { "type": "string" },
+        "album": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "duration": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "uploadedBy": { "type": "string" }
+      },
+      "required": ["id", "title", "artist", "audioUrl", "imageUrl", "duration", "createdAt"]
+    },
+    "Playlist": {
+      "title": "Playlist",
+      "description": "A user-created playlist of songs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "userId": { "type": "string" },
+        "songIds": {
+          "type": "array"
+        },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "userId", "songIds", "createdAt"]
+    },
+    "VipKey": {
+      "title": "VipKey",
+      "description": "VIP activation keys for PRO membership",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "used": { "type": "boolean" },
+        "usedBy": { "type": "string" },
+        "usedAt": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "used", "createdAt", "status"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Store individual user profile records"
+    },
+    "songs/{songId}": {
+      "schema": "Song",
+      "description": "Store individual music tracks upload info"
+    },
+    "playlists/{playlistId}": {
+      "schema": "Playlist",
+      "description": "Store user custom playlists"
+    },
+    "keys/{keyId}": {
+      "schema": "VipKey",
+      "description": "Store individual VIP activation keys"
+    }
+  }
+}

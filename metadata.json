@@ -1,0 +1,6 @@
+{
+  "name": "sk_edz_media_player",
+  "description": "SK Edz Media Player is a premium music player featuring a glassy liquid theme, optimized for mobile controls, with Firestore real-time library sync and direct Cloudinary uploads.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
