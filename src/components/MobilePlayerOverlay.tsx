@@ -99,17 +99,20 @@ export default function MobilePlayerOverlay({
     const diffY = endY - touchStartY.current;
     
     // Swipe left (next), Swipe right (prev)
+    // Predominantly horizontal swipe and exceeds threshold (45px)
     if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 45) {
       if (diffX < 0) {
+        // Finger swiped left -> Go to NEXT
         triggerSwipe("left", onSkipNext);
       } else {
+        // Finger swiped right -> Go to PREV
         triggerSwipe("right", onSkipPrev);
       }
     }
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0) return; // Only left-click drags
     isDragging.current = true;
     dragStartX.current = e.clientX;
     dragStartY.current = e.clientY;
@@ -124,6 +127,7 @@ export default function MobilePlayerOverlay({
     const diffX = endX - dragStartX.current;
     const diffY = endY - dragStartY.current;
 
+    // Swipe left (next), Swipe right (prev)
     if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 45) {
       if (diffX < 0) {
         triggerSwipe("left", onSkipNext);
@@ -138,6 +142,7 @@ export default function MobilePlayerOverlay({
   };
 
   const onClickCenterpiece = (e: React.MouseEvent) => {
+    // If a swipe drag happened, don't toggle open/close of vinyl!
     const diffX = Math.abs(e.clientX - dragStartX.current);
     const diffY = Math.abs(e.clientY - dragStartY.current);
     if (diffX > 8 || diffY > 8) {
@@ -145,16 +150,6 @@ export default function MobilePlayerOverlay({
     }
     setIsVinylSlidOut(!isVinylSlidOut);
   };
-
-  const getYTId = (song: Song) => {
-    if (song.youtubeId) return song.youtubeId;
-    if (!song.audioUrl) return null;
-    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-    const match = song.audioUrl.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
-  };
-
-  const ytId = getYTId(currentSong);
 
   return (
     <div 
@@ -224,128 +219,112 @@ export default function MobilePlayerOverlay({
         </div>
       </div>
 
-      {/* Centerpiece: YouTube Embed Player if YouTube track, else CD Pack & Vinyl */}
-      {ytId ? (
-        <div className="relative z-10 my-4 w-full flex flex-col items-center justify-center">
-          <div className="w-full max-w-sm rounded-2xl overflow-hidden border border-white/20 bg-black shadow-2xl relative">
-            <iframe
-              key={ytId}
-              src={`https://www.youtube.com/embed/${ytId}?autoplay=${isPlaying ? 1 : 0}&enablejsapi=1&playsinline=1&controls=1`}
-              className="w-full h-56 md:h-64"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              title={currentSong.title}
+      {/* Custom CD Pack Sleeve Centerpiece - Tapping toggles open/close */}
+      <div 
+        className="relative z-10 my-4 flex flex-col items-center justify-center w-full cursor-grab active:cursor-grabbing select-none"
+        onClick={onClickCenterpiece}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+      >
+        <div className={`relative flex items-center justify-center h-[260px] md:h-[300px] w-full max-w-sm overflow-visible transition-all duration-300 ease-out ${
+          swipeAction === "left" 
+            ? "-translate-x-[150%] opacity-0 rotate-[-12deg]" 
+            : swipeAction === "right" 
+              ? "translate-x-[150%] opacity-0 rotate-[12deg]" 
+              : "translate-x-0 opacity-100 rotate-0"
+        }`}>
+          
+          {/* Glowing Ambient Outer Ring behind the CD Pack */}
+          <div className="absolute w-72 h-72 bg-gradient-to-tr from-cyan-500/20 to-indigo-500/20 rounded-full blur-3xl animate-pulse"></div>
+          
+          {/* 1. CD SLEEVE / COVER BOX (Left Side) */}
+          <div 
+            className={`absolute w-52 h-52 md:w-60 md:h-60 bg-[#0e1124] rounded-2xl border border-white/12 shadow-2xl overflow-hidden z-20 transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${
+              isVinylSlidOut 
+                ? "-translate-x-14 md:-translate-x-16 rotate-[-2deg] shadow-[0_20px_50px_rgba(0,0,0,0.7)]" 
+                : "translate-x-0 shadow-[0_15px_35px_rgba(0,0,0,0.5)]"
+            }`}
+          >
+            {/* Cover photo */}
+            <img 
+              src={currentSong.imageUrl} 
+              alt={currentSong.title} 
+              className="w-full h-full object-cover"
+              referrerPolicy="no-referrer"
             />
+            {/* CD Pack spine decoration */}
+            <div className="absolute left-0 top-0 bottom-0 w-3.5 bg-black/40 border-r border-white/10 flex flex-col items-center justify-center py-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></div>
+            </div>
+            
+            {/* Interactive "TAP TO OPEN/CLOSE" banner */}
+            <div className="absolute bottom-0 inset-x-0 bg-black/65 backdrop-blur-sm py-1.5 px-3 text-center border-t border-white/5">
+              <span className="text-[9px] font-mono tracking-wider text-cyan-400 font-extrabold uppercase">
+                {isVinylSlidOut ? "Tap to Close Box" : "Tap to Open CD"}
+              </span>
+            </div>
           </div>
-          <span className="text-[10px] font-mono text-cyan-400 mt-2">✨ Playing via YouTube Official Player (100% Android & Web Compatible)</span>
-        </div>
-      ) : (
-        <div 
-          className="relative z-10 my-4 flex flex-col items-center justify-center w-full cursor-grab active:cursor-grabbing select-none"
-          onClick={onClickCenterpiece}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-        >
-          <div className={`relative flex items-center justify-center h-[260px] md:h-[300px] w-full max-w-sm overflow-visible transition-all duration-300 ease-out ${
-            swipeAction === "left" 
-              ? "-translate-x-[150%] opacity-0 rotate-[-12deg]" 
-              : swipeAction === "right" 
-                ? "translate-x-[150%] opacity-0 rotate-[12deg]" 
-                : "translate-x-0 opacity-100 rotate-0"
-          }`}>
-            
-            {/* Glowing Ambient Outer Ring behind the CD Pack */}
-            <div className="absolute w-72 h-72 bg-gradient-to-tr from-cyan-500/20 to-indigo-500/20 rounded-full blur-3xl animate-pulse"></div>
-            
-            {/* 1. CD SLEEVE / COVER BOX (Left Side) */}
-            <div 
-              className={`absolute w-52 h-52 md:w-60 md:h-60 bg-[#0e1124] rounded-2xl border border-white/12 shadow-2xl overflow-hidden z-20 transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${
-                isVinylSlidOut 
-                  ? "-translate-x-14 md:-translate-x-16 rotate-[-2deg] shadow-[0_20px_50px_rgba(0,0,0,0.7)]" 
-                  : "translate-x-0 shadow-[0_15px_35px_rgba(0,0,0,0.5)]"
-              }`}
-            >
-              {/* Cover photo */}
+
+          {/* 2. VINYL DISC / ROUND CD (Sliding out to the right) */}
+          <div 
+            className={`absolute w-48 h-48 md:w-56 md:h-56 rounded-full bg-[#080808] border-[8px] border-neutral-900 shadow-2xl flex items-center justify-center overflow-hidden transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${
+              isVinylSlidOut 
+                ? "translate-x-16 md:translate-x-20 z-10 rotate-[12deg]" 
+                : "translate-x-0 scale-95 opacity-50 z-10"
+            } ${isVinylSlidOut && isPlaying ? "animate-spin-slow" : ""}`}
+            style={{
+              boxShadow: "0 10px 40px rgba(0,0,0,0.8), inset 0 0 20px rgba(255,255,255,0.05)"
+            }}
+          >
+            {/* Grooves */}
+            <div className="absolute inset-2 border border-neutral-800 rounded-full opacity-40"></div>
+            <div className="absolute inset-8 border border-neutral-800 rounded-full opacity-40"></div>
+            <div className="absolute inset-14 border border-neutral-800 rounded-full opacity-40"></div>
+            <div className="absolute inset-20 border border-neutral-800 rounded-full opacity-40"></div>
+
+            {/* Inner Cover Photo */}
+            <div className="relative w-22 h-22 md:w-26 md:h-26 rounded-full overflow-hidden border-4 border-neutral-950 shadow-inner">
               <img 
                 src={currentSong.imageUrl} 
                 alt={currentSong.title} 
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover rounded-full"
                 referrerPolicy="no-referrer"
               />
-              {/* CD Pack spine decoration */}
-              <div className="absolute left-0 top-0 bottom-0 w-3.5 bg-black/40 border-r border-white/10 flex flex-col items-center justify-center py-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></div>
-              </div>
-              
-              {/* Interactive "TAP TO OPEN/CLOSE" banner */}
-              <div className="absolute bottom-0 inset-x-0 bg-black/65 backdrop-blur-sm py-1.5 px-3 text-center border-t border-white/5">
-                <span className="text-[9px] font-mono tracking-wider text-cyan-400 font-extrabold uppercase">
-                  {isVinylSlidOut ? "Tap to Close Box" : "Tap to Open CD"}
-                </span>
-              </div>
+              {/* Spindle hole in center */}
+              <div className="absolute inset-0 m-auto w-4.5 h-4.5 bg-black border-2 border-slate-700 rounded-full shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)]"></div>
             </div>
-
-            {/* 2. VINYL DISC / ROUND CD (Sliding out to the right) */}
-            <div 
-              className={`absolute w-48 h-48 md:w-56 md:h-56 rounded-full bg-[#080808] border-[8px] border-neutral-900 shadow-2xl flex items-center justify-center overflow-hidden transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${
-                isVinylSlidOut 
-                  ? "translate-x-16 md:translate-x-20 z-10 rotate-[12deg]" 
-                  : "translate-x-0 scale-95 opacity-50 z-10"
-              } ${isVinylSlidOut && isPlaying ? "animate-spin-slow" : ""}`}
-              style={{
-                boxShadow: "0 10px 40px rgba(0,0,0,0.8), inset 0 0 20px rgba(255,255,255,0.05)"
-              }}
-            >
-              {/* Grooves */}
-              <div className="absolute inset-2 border border-neutral-800 rounded-full opacity-40"></div>
-              <div className="absolute inset-8 border border-neutral-800 rounded-full opacity-40"></div>
-              <div className="absolute inset-14 border border-neutral-800 rounded-full opacity-40"></div>
-              <div className="absolute inset-20 border border-neutral-800 rounded-full opacity-40"></div>
-
-              {/* Inner Cover Photo */}
-              <div className="relative w-22 h-22 md:w-26 md:h-26 rounded-full overflow-hidden border-4 border-neutral-950 shadow-inner">
-                <img 
-                  src={currentSong.imageUrl} 
-                  alt={currentSong.title} 
-                  className="w-full h-full object-cover rounded-full"
-                  referrerPolicy="no-referrer"
-                />
-                {/* Spindle hole in center */}
-                <div className="absolute inset-0 m-auto w-4.5 h-4.5 bg-black border-2 border-slate-700 rounded-full shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)]"></div>
-              </div>
-            </div>
-
           </div>
 
-          {/* Swipe instruction tooltip */}
-          <div className="text-center mt-1 z-10 pointer-events-none select-none">
-            <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-cyan-500/5 border border-cyan-500/10 text-[9px] font-mono tracking-wider text-cyan-400 uppercase font-black">
-              <span>← Swipe Left (Next)</span>
-              <span className="text-slate-600">•</span>
-              <span>Swipe Right (Prev) →</span>
-            </span>
-          </div>
-
-          {/* Dynamic Visualizer Indicator */}
-          <div className="flex space-x-1 items-end h-8 mt-4">
-            {[...Array(9)].map((_, i) => (
-              <div 
-                key={i} 
-                className={`w-1 rounded-full bg-gradient-to-t from-cyan-400 to-indigo-500 transition-all duration-300 ${
-                  isPlaying ? "animate-audio-bar" : "h-1"
-                }`}
-                style={{ 
-                  animationDelay: `${i * 0.12}s`,
-                  height: isPlaying ? `${Math.floor(Math.random() * 24) + 6}px` : "3px"
-                }}
-              ></div>
-            ))}
-          </div>
         </div>
-      )}
+
+        {/* Swipe instruction tooltip */}
+        <div className="text-center mt-1 z-10 pointer-events-none select-none">
+          <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-cyan-500/5 border border-cyan-500/10 text-[9px] font-mono tracking-wider text-cyan-400 uppercase font-black">
+            <span>← Swipe Left (Next)</span>
+            <span className="text-slate-600">•</span>
+            <span>Swipe Right (Prev) →</span>
+          </span>
+        </div>
+
+        {/* Dynamic Visualizer Indicator */}
+        <div className="flex space-x-1 items-end h-8 mt-4">
+          {[...Array(9)].map((_, i) => (
+            <div 
+              key={i} 
+              className={`w-1 rounded-full bg-gradient-to-t from-cyan-400 to-indigo-500 transition-all duration-300 ${
+                isPlaying ? "animate-audio-bar" : "h-1"
+              }`}
+              style={{ 
+                animationDelay: `${i * 0.12}s`,
+                height: isPlaying ? `${Math.floor(Math.random() * 24) + 6}px` : "3px"
+              }}
+            ></div>
+          ))}
+        </div>
+      </div>
 
       {/* Media Details */}
       <div className="relative z-10 px-2 mt-auto">

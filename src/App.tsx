@@ -1316,15 +1316,7 @@ export default function App() {
     setCurrentQueue(queue);
     setCurrentSongIndex(index);
     setIsPlaying(true);
-    setIsBuffering(false);
-
-    const isYt = Boolean(song.isYoutube || song.youtubeId);
-    if (isYt) {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-      return;
-    }
+    setIsBuffering(true);
 
     if (audioRef.current) {
       // Lazy initialize Web Audio Equalizer on user action
@@ -1369,13 +1361,6 @@ export default function App() {
       return;
     }
 
-    const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
-    const isYt = activeSong ? Boolean(activeSong.isYoutube || activeSong.youtubeId) : false;
-    if (isYt) {
-      setIsPlaying(!isPlaying);
-      return;
-    }
-
     if (!audioRef.current) return;
 
     // Lazy initialize Web Audio Equalizer on user action
@@ -1392,6 +1377,7 @@ export default function App() {
       }
       setIsVideoPlaying(false);
 
+      const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
       if (activeSong && activeAudioIdRef.current !== activeSong.id) {
         activeAudioIdRef.current = activeSong.id;
         const streamUrl = getSongStreamUrl(activeSong);
@@ -1416,29 +1402,6 @@ export default function App() {
       });
     }
   };
-
-  // YouTube audio playback interval sync
-  useEffect(() => {
-    let timer: any = null;
-    const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
-    const isYt = activeSong ? Boolean(activeSong.isYoutube || activeSong.youtubeId) : false;
-
-    if (isPlaying && isYt && activeSong) {
-      timer = setInterval(() => {
-        setCurrentTime((prev) => {
-          const next = prev + 1;
-          if (activeSong.duration && next >= activeSong.duration) {
-            handleSkipNext();
-            return 0;
-          }
-          return next;
-        });
-      }, 1000);
-    }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [isPlaying, currentSongIndex, currentQueue]);
 
   const handleSkipNext = () => {
     if (currentQueue.length === 0) return;
@@ -2395,7 +2358,7 @@ export default function App() {
                             <img 
                               src={song.imageUrl} 
                               alt={song.title} 
-                              className={`w-full h-full object-cover transition-transform duration-700 ${song.isYoutube || song.youtubeId ? "group-hover:scale-110" : "group-hover:scale-100"}`} 
+                              className="w-full h-full object-cover group-hover:scale-110 transition-all duration-500" 
                               referrerPolicy="no-referrer"
                             />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -2491,7 +2454,7 @@ export default function App() {
                             <img 
                               src={song.imageUrl} 
                               alt={song.title} 
-                              className={`w-full h-full object-cover transition-transform duration-700 ${song.isYoutube || song.youtubeId ? "group-hover:scale-110" : "group-hover:scale-100"}`} 
+                              className="w-full h-full object-cover group-hover:scale-115 transition-transform duration-500" 
                               referrerPolicy="no-referrer"
                             />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -4530,17 +4493,6 @@ export default function App() {
         onClose={() => setIsNotificationsOpen(false)}
         notifications={userNotifications}
       />
-
-      {/* Hidden YouTube Iframe Player for YouTube tracks */}
-      {currentSong && (currentSong.isYoutube || currentSong.youtubeId) && isPlaying && (
-        <iframe
-          key={currentSong.youtubeId || currentSong.id}
-          src={`https://www.youtube.com/embed/${currentSong.youtubeId || getYouTubeId(currentSong.audioUrl)}?autoplay=1&enablejsapi=1`}
-          style={{ display: "none", width: 0, height: 0, position: "absolute", pointerEvents: "none" }}
-          allow="autoplay"
-          title="YouTube Audio Player"
-        />
-      )}
 
     </div>
   );
