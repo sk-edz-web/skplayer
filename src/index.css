@@ -1,34 +1,16 @@
 @import "tailwindcss";
 
-html {
-  scroll-behavior: smooth;
-}
-
-/* Premium micro scrollbars with glass-morphic friction */
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 999px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  transition: background 0.3s ease;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
+/* Enable clean, free native touch scrolling with inertia while hiding scrollbars globally on all elements */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(0, 0, 0, 0.2);
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE/Edge */
+  -webkit-overflow-scrolling: touch !important; /* Kinetic scrolling physics for mobile and touchscreens */
+}
+
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0px !important;
+  height: 0px !important;
 }
 
 @layer utilities {
@@ -42,7 +24,7 @@ html {
       0 16px 50px -10px rgba(0, 0, 0, 0.65), 
       inset 0 1px 1px 0 rgba(255, 255, 255, 0.25),
       inset 0 -1px 2px 0 rgba(255, 255, 255, 0.05);
-    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.4s ease, box-shadow 0.4s ease;
   }
   .glass-card:hover {
     background: linear-gradient(135deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.04) 100%);
@@ -359,4 +341,6 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .animate-blob {
   animation: blob-bounce 20s ease-in-out infinite;
 }
+
+/* Scrollbar utility classes are defined at the top of the file */
 

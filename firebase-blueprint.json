@@ -62,6 +62,37 @@
         "status": { "type": "string" }
       },
       "required": ["id", "used", "createdAt", "status"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "User reported problems, audio glitches or bug reports",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "isVIP": { "type": "boolean" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "description", "status", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Real-time user notification messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "title", "message", "read", "createdAt"]
     }
   },
   "firestore": {
@@ -80,6 +111,14 @@
     "keys/{keyId}": {
       "schema": "VipKey",
       "description": "Store individual VIP activation keys"
+    },
+    "reports/{reportId}": {
+      "schema": "Report",
+      "description": "Store user issue and bug reports"
+    },
+    "notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Store user real-time status update notifications"
     }
   }
 }

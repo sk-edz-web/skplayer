@@ -11,6 +11,8 @@ export interface EqSettings {
     hz14k: number;
   };
   goldBassActive?: boolean;
+  musicEqEnabled?: boolean;
+  videoEqEnabled?: boolean;
 }
 
 interface EqualizerModalProps {

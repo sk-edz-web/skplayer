@@ -56,12 +56,19 @@ import {
   DownloadCloud,
   Settings,
   Paintbrush,
-  X
+  X,
+  Video,
+  Tv,
+  Bell,
+  AlertTriangle,
+  MessageSquare
 } from "lucide-react";
-import { Song, Playlist, UserProfile } from "./types";
+import { Song, Playlist, UserProfile, VideoItem, AppNotification } from "./types";
 import AuthPanel from "./components/AuthPanel";
 import MobilePlayerOverlay from "./components/MobilePlayerOverlay";
 import EqualizerModal, { EqSettings } from "./components/EqualizerModal";
+import ReportModal from "./components/ReportModal";
+import NotificationsCenter from "./components/NotificationsCenter";
 import { saveLocalSong, getLocalSongs, deleteLocalSong, clearLocalSongs } from "./lib/localDb";
 
 interface ID3Metadata {
@@ -183,6 +190,64 @@ function parseID3Tags(buffer: ArrayBuffer): ID3Metadata {
   return result;
 }
 
+// Helper to extract YouTube Video ID from any standard YT link
+function getYouTubeId(url: string): string | null {
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = url.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : null;
+}
+
+// Helper to resolve clean audio stream URL (direct MP3, blob, or ad-free YouTube audio stream)
+function getSongStreamUrl(song: Song | null): string {
+  if (!song) return "";
+  if (song.isYoutube && song.youtubeId) {
+    return `/api/youtube-stream?id=${song.youtubeId}&audioOnly=true`;
+  }
+  if (song.youtubeId) {
+    return `/api/youtube-stream?id=${song.youtubeId}&audioOnly=true`;
+  }
+  if (song.audioUrl) {
+    if (song.audioUrl.startsWith("/api/youtube-stream")) {
+      return song.audioUrl;
+    }
+    const ytId = getYouTubeId(song.audioUrl);
+    if (ytId) {
+      return `/api/youtube-stream?id=${ytId}&audioOnly=true`;
+    }
+    return song.audioUrl;
+  }
+  return "";
+}
+
+// Fetch YouTube video title via NoEmbed or public OEmbed APIs
+const fetchYouTubeTitle = async (videoId: string): Promise<string | null> => {
+  try {
+    const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.title) {
+        return data.title;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to fetch title from NoEmbed:", e);
+  }
+
+  try {
+    const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.title) {
+        return data.title;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to fetch title from YouTube OEmbed:", e);
+  }
+
+  return null;
+};
+
 export default function App() {
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<"home" | "search" | "playlist" | "account" | "local">("home");
@@ -241,23 +306,27 @@ export default function App() {
         return {
           preset: parsed.preset || "Normal",
           bands: parsed.bands || { hz60: 0, hz230: 0, hz910: 0, hz4k: 0, hz14k: 0 },
-          goldBassActive: parsed.goldBassActive !== undefined ? parsed.goldBassActive : false
+          goldBassActive: parsed.goldBassActive !== undefined ? parsed.goldBassActive : false,
+          musicEqEnabled: parsed.musicEqEnabled !== undefined ? parsed.musicEqEnabled : true,
+          videoEqEnabled: parsed.videoEqEnabled !== undefined ? parsed.videoEqEnabled : true
         };
       }
     } catch (e) {}
     return {
       preset: "Normal",
       bands: { hz60: 0, hz230: 0, hz910: 0, hz4k: 0, hz14k: 0 },
-      goldBassActive: false
+      goldBassActive: false,
+      musicEqEnabled: true,
+      videoEqEnabled: true
     };
   });
   const [playlistDropdownOpen, setPlaylistDropdownOpen] = useState<string | null>(null);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const [newPlaylistThumbnail, setNewPlaylistThumbnail] = useState("");
+  const [pfpUrlInput, setPfpUrlInput] = useState("");
   const [pfpProgress, setPfpProgress] = useState(0);
   const [pfpMessage, setPfpMessage] = useState("");
-  const [pfpUrlInput, setPfpUrlInput] = useState("");
   const [uploadingImage, setUploadingImage] = useState(false);
 
   // VIP Key Activation State
@@ -265,6 +334,36 @@ export default function App() {
   const [proKeyLoading, setProKeyLoading] = useState(false);
   const [proKeyError, setProKeyError] = useState("");
   const [proKeySuccess, setProKeySuccess] = useState("");
+
+  // Interactive Tutorial States
+  const [showTutorialQuestion, setShowTutorialQuestion] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState(0);
+
+  // Premium Video Hub States
+  const [homeSubTab, setHomeSubTab] = useState<"music" | "video">("music");
+  const [videoTab, setVideoTab] = useState<"youtube" | "my_media">("youtube");
+  const [savedVideos, setSavedVideos] = useState<VideoItem[]>(() => {
+    const localVideos = localStorage.getItem("skplayer_saved_videos");
+    if (localVideos) {
+      try {
+        return JSON.parse(localVideos);
+      } catch (e) {
+        console.warn("Failed to parse saved videos", e);
+      }
+    }
+    return [];
+  });
+  const [resolvedYoutubeUrl, setResolvedYoutubeUrl] = useState<string | null>(null);
+  const [isResolvingYoutube, setIsResolvingYoutube] = useState(false);
+  const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
+  const [youtubeUrlInput, setYoutubeUrlInput] = useState("");
+  const [youtubeTitleInput, setYoutubeTitleInput] = useState("");
+  const [mediaUrlInput, setMediaUrlInput] = useState("");
+  const [mediaTitleInput, setMediaTitleInput] = useState("");
+  const [videoEqActive, setVideoEqActive] = useState(true);
+  const [youtubeSearchQuery, setYoutubeSearchQuery] = useState("");
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
   // System Configuration, PWA & Swipe States
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -301,6 +400,12 @@ export default function App() {
   const [audioQuality, setAudioQuality] = useState<"128" | "320">("128");
   const [settingsSubTab, setSettingsSubTab] = useState<"theme" | "audio" | "account">("theme");
 
+  // User Reports & In-App Realtime Notifications
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportTargetSong, setReportTargetSong] = useState<Song | null>(null);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [userNotifications, setUserNotifications] = useState<AppNotification[]>([]);
+
   const [isUploadingCover, setIsUploadingCover] = useState(false);
 
   // Gold specific customization options
@@ -324,8 +429,8 @@ export default function App() {
     });
   };
 
-  // ImgBB direct file upload function via server-side proxy
-  const uploadToImgBB = async (file: File): Promise<string> => {
+  // Local file upload function via server-side proxy
+  const uploadToLocalServer = async (file: File, type: "avatar" | "playlist"): Promise<string> => {
     try {
       const base64 = await toBase64(file);
       const response = await fetch("/api/upload", {
@@ -335,7 +440,7 @@ export default function App() {
         },
         body: JSON.stringify({
           file: base64,
-          presetType: "playlist",
+          presetType: type,
         }),
       });
       
@@ -346,10 +451,12 @@ export default function App() {
       const data = await response.json();
       return data.secure_url;
     } catch (err: any) {
-      console.error("ImgBB proxy upload failed:", err);
+      console.error("Local server upload failed:", err);
       throw err;
     }
   };
+
+
 
   // Persist settings
   useEffect(() => {
@@ -544,6 +651,10 @@ export default function App() {
   const preampNodeRef = useRef<GainNode | null>(null);
   const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   
+  // Custom Video Element Refs for hardware Equalizer routing
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  
   // Synchronized refs to allow persistent Audio element listener to access fresh states without teardown
   const currentQueueRef = useRef<Song[]>([]);
   const currentSongIndexRef = useRef<number>(-1);
@@ -557,30 +668,40 @@ export default function App() {
     if (filtersRef.current.length === 5) {
       try {
         const ctx = audioContextRef.current;
+        const isVideoSubTab = homeSubTab === "video";
+        const eqZoneEnabled = isVideoSubTab 
+          ? (eqSettings.videoEqEnabled !== false)
+          : (eqSettings.musicEqEnabled !== false);
+
+        const target60 = eqZoneEnabled ? eqSettings.bands.hz60 : 0;
+        const target230 = eqZoneEnabled ? eqSettings.bands.hz230 : 0;
+        const target910 = eqZoneEnabled ? eqSettings.bands.hz910 : 0;
+        const target4k = eqZoneEnabled ? eqSettings.bands.hz4k : 0;
+        const target14k = eqZoneEnabled ? eqSettings.bands.hz14k : 0;
+
         if (ctx) {
           const now = ctx.currentTime;
           
-          // Apply Audio Quality adjustments
-          // 320kbps has crisp highs and deep bass. 128kbps is flatter and slightly muffled
-          const qualityBassBoost = audioQuality === "320" ? 3.5 : -1.0;
-          const qualityTrebleBoost = audioQuality === "320" ? 3.0 : -3.5;
+          // Apply Audio Quality adjustments only for Music when active
+          const qualityBassBoost = (!isVideoSubTab && eqZoneEnabled) ? (audioQuality === "320" ? 3.5 : -1.0) : 0;
+          const qualityTrebleBoost = (!isVideoSubTab && eqZoneEnabled) ? (audioQuality === "320" ? 3.0 : -3.5) : 0;
           const qualityPreamp = audioQuality === "320" ? 1.15 : 0.85;
 
-          filtersRef.current[0].gain.setTargetAtTime(eqSettings.bands.hz60 + qualityBassBoost, now, 0.02);
-          filtersRef.current[1].gain.setTargetAtTime(eqSettings.bands.hz230, now, 0.02);
-          filtersRef.current[2].gain.setTargetAtTime(eqSettings.bands.hz910, now, 0.02);
-          filtersRef.current[3].gain.setTargetAtTime(eqSettings.bands.hz4k, now, 0.02);
-          filtersRef.current[4].gain.setTargetAtTime(eqSettings.bands.hz14k + qualityTrebleBoost, now, 0.02);
+          filtersRef.current[0].gain.setTargetAtTime(target60 + qualityBassBoost, now, 0.02);
+          filtersRef.current[1].gain.setTargetAtTime(target230, now, 0.02);
+          filtersRef.current[2].gain.setTargetAtTime(target910, now, 0.02);
+          filtersRef.current[3].gain.setTargetAtTime(target4k, now, 0.02);
+          filtersRef.current[4].gain.setTargetAtTime(target14k + qualityTrebleBoost, now, 0.02);
           
-          const activeGoldBass = isGoldActive && eqSettings.goldBassActive;
+          const activeGoldBass = eqZoneEnabled && isGoldActive && eqSettings.goldBassActive;
 
           const maxBoost = Math.max(
             0,
-            eqSettings.bands.hz60,
-            eqSettings.bands.hz230,
-            eqSettings.bands.hz910,
-            eqSettings.bands.hz4k,
-            eqSettings.bands.hz14k
+            target60,
+            target230,
+            target910,
+            target4k,
+            target14k
           );
           
           let basePreamp = 1.0;
@@ -592,37 +713,37 @@ export default function App() {
 
           if (goldenBassFilterRef.current) {
             const baseBass = activeGoldBass ? 20.0 : 0.0; // Extreme gold subwoofer boost
-            goldenBassFilterRef.current.gain.setTargetAtTime(baseBass + (audioQuality === "320" ? 2.0 : 0.0), now, 0.03);
+            goldenBassFilterRef.current.gain.setTargetAtTime(baseBass + ((!isVideoSubTab && audioQuality === "320") ? 2.0 : 0.0), now, 0.03);
           }
           if (goldenBassPeakingRef.current) {
             const basePeak = activeGoldBass ? 15.5 : 0.0; // Heavy punchy kick bass
-            goldenBassPeakingRef.current.gain.setTargetAtTime(basePeak + (audioQuality === "320" ? 1.5 : 0.0), now, 0.03);
+            goldenBassPeakingRef.current.gain.setTargetAtTime(basePeak + ((!isVideoSubTab && audioQuality === "320") ? 1.5 : 0.0), now, 0.03);
           }
           if (preampNodeRef.current) {
             // Lower preamp smoothly when active to prevent any crackling/distortion, scaled by audio quality
-            preampNodeRef.current.gain.setTargetAtTime(basePreamp * qualityPreamp, now, 0.03);
+            preampNodeRef.current.gain.setTargetAtTime(basePreamp * (isVideoSubTab ? 1.0 : qualityPreamp), now, 0.03);
           }
         } else {
           // Fallback if context is not active yet
-          const qualityBassBoost = audioQuality === "320" ? 3.5 : -1.0;
-          const qualityTrebleBoost = audioQuality === "320" ? 3.0 : -3.5;
+          const qualityBassBoost = (!isVideoSubTab && eqZoneEnabled) ? (audioQuality === "320" ? 3.5 : -1.0) : 0;
+          const qualityTrebleBoost = (!isVideoSubTab && eqZoneEnabled) ? (audioQuality === "320" ? 3.0 : -3.5) : 0;
           const qualityPreamp = audioQuality === "320" ? 1.15 : 0.85;
 
-          filtersRef.current[0].gain.value = eqSettings.bands.hz60 + qualityBassBoost;
-          filtersRef.current[1].gain.value = eqSettings.bands.hz230;
-          filtersRef.current[2].gain.value = eqSettings.bands.hz910;
-          filtersRef.current[3].gain.value = eqSettings.bands.hz4k;
-          filtersRef.current[4].gain.value = eqSettings.bands.hz14k + qualityTrebleBoost;
+          filtersRef.current[0].gain.value = target60 + qualityBassBoost;
+          filtersRef.current[1].gain.value = target230;
+          filtersRef.current[2].gain.value = target910;
+          filtersRef.current[3].gain.value = target4k;
+          filtersRef.current[4].gain.value = target14k + qualityTrebleBoost;
           
-          const activeGoldBass = isGoldActive && eqSettings.goldBassActive;
+          const activeGoldBass = eqZoneEnabled && isGoldActive && eqSettings.goldBassActive;
 
           const maxBoost = Math.max(
             0,
-            eqSettings.bands.hz60,
-            eqSettings.bands.hz230,
-            eqSettings.bands.hz910,
-            eqSettings.bands.hz4k,
-            eqSettings.bands.hz14k
+            target60,
+            target230,
+            target910,
+            target4k,
+            target14k
           );
           
           let basePreamp = 1.0;
@@ -633,20 +754,20 @@ export default function App() {
           }
 
           if (goldenBassFilterRef.current) {
-            goldenBassFilterRef.current.gain.value = (activeGoldBass ? 12.0 : 0.0) + (audioQuality === "320" ? 2.0 : 0.0);
+            goldenBassFilterRef.current.gain.value = (activeGoldBass ? 12.0 : 0.0) + ((!isVideoSubTab && audioQuality === "320") ? 2.0 : 0.0);
           }
           if (goldenBassPeakingRef.current) {
-            goldenBassPeakingRef.current.gain.value = (activeGoldBass ? 9.5 : 0.0) + (audioQuality === "320" ? 1.5 : 0.0);
+            goldenBassPeakingRef.current.gain.value = (activeGoldBass ? 9.5 : 0.0) + ((!isVideoSubTab && audioQuality === "320") ? 1.5 : 0.0);
           }
           if (preampNodeRef.current) {
-            preampNodeRef.current.gain.value = basePreamp * qualityPreamp;
+            preampNodeRef.current.gain.value = basePreamp * (isVideoSubTab ? 1.0 : qualityPreamp);
           }
         }
       } catch (e) {
         console.warn("Failed to set filter gain value:", e);
       }
     }
-  }, [eqSettings, audioQuality, isGoldActive]);
+  }, [eqSettings, audioQuality, isGoldActive, homeSubTab]);
 
   const initAudioContext = () => {
     if (audioContextRef.current) return;
@@ -747,6 +868,26 @@ export default function App() {
     }
   };
 
+  const initVideoAudioContext = () => {
+    if (!audioContextRef.current) {
+      initAudioContext();
+    }
+    if (!audioContextRef.current || !videoRef.current || videoSourceNodeRef.current) return;
+    try {
+      const ctx = audioContextRef.current;
+      videoRef.current.crossOrigin = "anonymous";
+      const source = ctx.createMediaElementSource(videoRef.current);
+      videoSourceNodeRef.current = source;
+      
+      if (preampNodeRef.current) {
+        source.connect(preampNodeRef.current);
+      }
+      console.log("Successfully connected Video Element to Professional 5-Band Hardware EQ Chain!");
+    } catch (err) {
+      console.warn("Could not route video audio through EQ:", err);
+    }
+  };
+
   useEffect(() => {
     currentQueueRef.current = currentQueue;
   }, [currentQueue]);
@@ -807,6 +948,62 @@ export default function App() {
     };
   }, []);
 
+  // Save videos to local storage on change
+  useEffect(() => {
+    localStorage.setItem("skplayer_saved_videos", JSON.stringify(savedVideos));
+  }, [savedVideos]);
+
+  // Automatically fetch YouTube title when URL is entered for saving
+  useEffect(() => {
+    const videoId = getYouTubeId(youtubeUrlInput);
+    if (videoId) {
+      fetchYouTubeTitle(videoId).then((title) => {
+        if (title) {
+          setYoutubeTitleInput(title);
+        }
+      });
+    }
+  }, [youtubeUrlInput]);
+
+  // Resolve YouTube video URL to our custom CORS proxy endpoint for Web Audio API EQ/Bass Boost compatibility
+  useEffect(() => {
+    if (currentVideo && currentVideo.type === "youtube") {
+      const videoId = getYouTubeId(currentVideo.url);
+      if (videoId) {
+        setResolvedYoutubeUrl(`/api/youtube-stream?id=${videoId}`);
+      } else {
+        setResolvedYoutubeUrl(null);
+      }
+    } else {
+      setResolvedYoutubeUrl(null);
+    }
+  }, [currentVideo]);
+
+  // Check if we should prompt the user for a tutorial after they log in
+  useEffect(() => {
+    if (user) {
+      const tutorialShown = localStorage.getItem("skplayer_tutorial_shown");
+      if (!tutorialShown) {
+        setShowTutorialQuestion(true);
+      }
+    } else {
+      setShowTutorialQuestion(false);
+      setShowTutorial(false);
+    }
+  }, [user]);
+
+  const handleSkipOrCompleteTutorial = () => {
+    localStorage.setItem("skplayer_tutorial_shown", "true");
+    setShowTutorial(false);
+    setShowTutorialQuestion(false);
+  };
+
+  const handleStartTutorial = () => {
+    setShowTutorialQuestion(false);
+    setShowTutorial(true);
+    setTutorialStep(0);
+  };
+
   // Load local offline songs from IndexedDB on mount
   useEffect(() => {
     const loadPersistedLocalSongs = async () => {
@@ -837,19 +1034,6 @@ export default function App() {
     loadPersistedLocalSongs();
   }, []);
 
-  // Prevent body scrolling when a full-screen modal or overlay is open
-  useEffect(() => {
-    const isModalOpen = isMobileOverlayOpen || isSettingsOpen || isEqualizerOpen || isCreatingPlaylist;
-    if (isModalOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isMobileOverlayOpen, isSettingsOpen, isEqualizerOpen, isCreatingPlaylist]);
-
   // Listen to Database Songs (Real-time sync!)
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "songs"), (snapshot) => {
@@ -866,7 +1050,9 @@ export default function App() {
           duration: data.duration || 0,
           createdAt: data.createdAt || Date.now(),
           uploadedBy: data.uploadedBy || "",
-          categories: data.categories || []
+          categories: data.categories || [],
+          isYoutube: data.isYoutube || false,
+          youtubeId: data.youtubeId || ""
         });
       });
       // Sort newest first
@@ -942,6 +1128,40 @@ export default function App() {
     }, (error) => {
       console.error("Playlists subscription failed:", error);
     });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Real-time Notifications Subscription for current User or device
+  useEffect(() => {
+    let currentUid = user?.uid;
+    if (!currentUid) {
+      currentUid = localStorage.getItem("skplayer_device_user_id") || "";
+    }
+    if (!currentUid) {
+      currentUid = "user_" + Math.random().toString(36).substring(2, 10);
+      localStorage.setItem("skplayer_device_user_id", currentUid);
+    }
+
+    const notifQuery = query(
+      collection(db, "notifications"),
+      where("userId", "==", currentUid)
+    );
+
+    const unsubscribe = onSnapshot(
+      notifQuery,
+      (snapshot) => {
+        const list: AppNotification[] = [];
+        snapshot.forEach((d) => {
+          list.push({ id: d.id, ...d.data() } as AppNotification);
+        });
+        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        setUserNotifications(list);
+      },
+      (err) => {
+        console.warn("Notifications subscription error:", err);
+      }
+    );
 
     return () => unsubscribe();
   }, [user]);
@@ -1074,6 +1294,12 @@ export default function App() {
   const playSong = (index: number, queue: Song[] = songs, forceRestart: boolean = false) => {
     if (queue.length === 0 || index < 0 || index >= queue.length) return;
 
+    // Stop any active video playback
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    setIsVideoPlaying(false);
+
     const song = queue[index];
     setPlaybackError(null);
 
@@ -1099,7 +1325,8 @@ export default function App() {
       // Only set source if the track ID has changed (prevent redundant loads and abort stuttering)
       if (activeAudioIdRef.current !== song.id) {
         activeAudioIdRef.current = song.id;
-        audioRef.current.src = song.audioUrl;
+        const streamUrl = getSongStreamUrl(song);
+        audioRef.current.src = streamUrl;
         audioRef.current.load(); // Standard practice: explicitly trigger load to reset decoding pipeline and load new src
         try {
           audioRef.current.currentTime = 0;
@@ -1144,10 +1371,17 @@ export default function App() {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
+      // Pause any active video
+      if (videoRef.current) {
+        videoRef.current.pause();
+      }
+      setIsVideoPlaying(false);
+
       const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
       if (activeSong && activeAudioIdRef.current !== activeSong.id) {
         activeAudioIdRef.current = activeSong.id;
-        audioRef.current.src = activeSong.audioUrl;
+        const streamUrl = getSongStreamUrl(activeSong);
+        audioRef.current.src = streamUrl;
         audioRef.current.load(); // Explicitly load the source
         try {
           audioRef.current.currentTime = 0;
@@ -1245,46 +1479,7 @@ export default function App() {
     setPlaybackMode(modes[nextIdx]);
   };
 
-  // Profile Picture Direct Upload to ImgBB via server proxy
-  const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user) return;
 
-    setPfpMessage("Uploading avatar via server backend...");
-    setPfpProgress(15);
-
-    try {
-      const base64 = await toBase64(file);
-      setPfpProgress(45);
-
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          file: base64,
-          presetType: "avatar",
-        }),
-      });
-
-      if (!res.ok) throw new Error("ImgBB proxy upload failed");
-
-      setPfpProgress(75);
-      const data = await res.json();
-      const secureUrl = data.secure_url;
-
-      if (secureUrl) {
-        await updateProfilePicture(secureUrl);
-        setPfpProgress(100);
-        setPfpMessage("Profile picture updated successfully! ✨");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setPfpMessage(`Upload failed: ${err.message}`);
-      setPfpProgress(0);
-    }
-  };
 
   // Save manual avatar URL or handle uploaded URL
   const updateProfilePicture = async (url: string) => {
@@ -1299,6 +1494,33 @@ export default function App() {
     } catch (err) {
       console.error("Failed to update profile pic in database:", err);
       alert("Profile update failed in Firestore.");
+    }
+  };
+
+  // Handle uploading user profile picture securely
+  const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    setUploadingImage(true);
+    setPfpProgress(20);
+    setPfpMessage("Uploading photo securely to local server...");
+
+    try {
+      setPfpProgress(50);
+      const uploadedUrl = await uploadToLocalServer(file, "avatar");
+      setPfpProgress(85);
+      
+      await updateProfilePicture(uploadedUrl);
+      
+      setPfpProgress(100);
+      setPfpMessage("Profile picture updated successfully! 🎉");
+    } catch (err: any) {
+      console.error("PFP Upload failed:", err);
+      setPfpMessage(`Upload failed: ${err.message || err}`);
+      setPfpProgress(0);
+    } finally {
+      setUploadingImage(false);
     }
   };
 
@@ -1408,11 +1630,17 @@ export default function App() {
       const trimmedKey = proKeyInput.trim().toUpperCase();
       const keyDocRef = doc(db, "keys", trimmedKey);
 
-      // Auto-seed key if it's our test key so the user has a working key in Firestore out of the box
-      if (trimmedKey === "SARATHI-GOLD") {
+      // Auto-seed default testing keys in Firestore if needed
+      if (trimmedKey === "SARATHI-GOLD" || trimmedKey === "SARATHI-99" || trimmedKey === "SARATHI-199") {
         const checkSnap = await getDoc(keyDocRef);
         if (!checkSnap.exists()) {
+          const isPlan199 = trimmedKey.includes("199");
           await setDoc(keyDocRef, {
+            code: trimmedKey,
+            plan: isPlan199 ? 199 : 99,
+            planName: isPlan199 ? "₹199 VIP Master Pass (1 Year)" : "₹99 VIP Gold Pass (1 Month)",
+            price: isPlan199 ? 199 : 99,
+            durationDays: isPlan199 ? 365 : 30,
             status: "active",
             used: false,
             createdAt: Date.now()
@@ -1435,24 +1663,33 @@ export default function App() {
         return;
       }
 
-      // Update Key Status to used
+      // Determine plan info (99 or 199)
+      const planNumber: 99 | 199 = Number(keyData.plan) === 199 ? 199 : 99;
+      const durationDays = keyData.durationDays || (planNumber === 199 ? 365 : 30);
+      const planTitle = keyData.planName || (planNumber === 199 ? "₹199 VIP Master Pass (1 Year)" : "₹99 VIP Gold Pass (30 Days)");
+
+      // Update Key Status to used in database
       await updateDoc(keyDocRef, {
         status: "used",
         used: true,
-        usedBy: user.uid,
+        usedBy: user.email || user.uid,
+        userId: user.uid,
         usedAt: Date.now()
       });
 
-      // Update User Profile Doc to activate Pro status for 30 days
+      // Update User Profile Doc to activate Pro status for the specific plan in database
       const userDocRef = doc(db, "users", user.uid);
       await updateDoc(userDocRef, {
         isPro: true,
         proKey: trimmedKey,
+        plan: planNumber,
+        planName: planTitle,
+        tier: planNumber === 199 ? "master" : "gold",
         proActivatedAt: Date.now(),
-        proExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days of validity
+        proExpiresAt: Date.now() + durationDays * 24 * 60 * 60 * 1000
       });
 
-      setProKeySuccess("👑 VIP Gold Activated Successfully! All premium features unlocked.");
+      setProKeySuccess(`👑 ${planTitle} Activated Successfully! All VIP premium features unlocked.`);
       setProKeyInput("");
     } catch (err) {
       console.error("VIP activation failure:", err);
@@ -1670,6 +1907,104 @@ export default function App() {
     }
   };
 
+  const playVideoItem = (video: VideoItem) => {
+    // Pause general music audio player to prevent audio overlap
+    if (audioRef.current) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    }
+    
+    setCurrentVideo(video);
+    setIsVideoPlaying(true);
+  };
+
+  const handleAddYouTubeVideo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!youtubeUrlInput.trim()) return;
+    
+    const videoId = getYouTubeId(youtubeUrlInput);
+    if (!videoId) {
+      alert("Invalid YouTube URL. Please use a standard YouTube, Share, or Shorts link.");
+      return;
+    }
+    
+    setIsResolvingYoutube(true);
+    let title = youtubeTitleInput.trim();
+    if (!title) {
+      const fetchedTitle = await fetchYouTubeTitle(videoId);
+      title = fetchedTitle || `YouTube Track - ${videoId}`;
+    }
+    
+    const newVideo: VideoItem = {
+      id: `yt-${videoId}-${Date.now()}`,
+      userId: user?.uid || "guest",
+      title,
+      url: youtubeUrlInput,
+      type: "youtube",
+      thumbnailUrl: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+      createdAt: Date.now()
+    };
+    
+    setSavedVideos(prev => [newVideo, ...prev]);
+    setYoutubeUrlInput("");
+    setYoutubeTitleInput("");
+    setIsResolvingYoutube(false);
+    
+    playVideoItem(newVideo);
+  };
+
+  const handleAddMyMediaVideo = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mediaUrlInput.trim()) return;
+    
+    const title = mediaTitleInput.trim() || `Media Track - ${Date.now()}`;
+    const newVideo: VideoItem = {
+      id: `media-url-${Date.now()}`,
+      userId: user?.uid || "guest",
+      title,
+      url: mediaUrlInput,
+      type: "my_media",
+      thumbnailUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&auto=format&fit=crop&q=60",
+      createdAt: Date.now()
+    };
+    
+    setSavedVideos(prev => [newVideo, ...prev]);
+    setMediaUrlInput("");
+    setMediaTitleInput("");
+    
+    playVideoItem(newVideo);
+  };
+
+  const handleDeleteVideo = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm("Are you sure you want to remove this video?")) {
+      setSavedVideos(prev => prev.filter(v => v.id !== id));
+      if (currentVideo?.id === id) {
+        setCurrentVideo(null);
+        setIsVideoPlaying(false);
+      }
+    }
+  };
+
+  const handleVideoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const url = URL.createObjectURL(file);
+    const newVideo: VideoItem = {
+      id: `local-video-${Date.now()}`,
+      userId: user?.uid || "guest",
+      title: file.name.replace(/\.[^/.]+$/, ""), // strip extension
+      url: url,
+      type: "my_media",
+      thumbnailUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&auto=format&fit=crop&q=60",
+      createdAt: Date.now()
+    };
+    
+    setSavedVideos(prev => [newVideo, ...prev]);
+    playVideoItem(newVideo);
+  };
+
   const handleDownloadSong = async (song: Song) => {
     if (!isGoldActive) {
       alert("👑 Song Downloading is a premium Golden VIP effect! Activate your 30-day VIP Pro Key in the Profile tab to unlock instant high-fidelity downloads.");
@@ -1698,8 +2033,77 @@ export default function App() {
     }
   };
 
+  if (loadingAuth) {
+    return (
+      <div className="min-h-screen w-full bg-[#04050a] flex flex-col items-center justify-center text-white select-none relative overflow-hidden">
+        {/* Glow effect */}
+        <div className="absolute w-64 h-64 bg-cyan-500/10 rounded-full blur-[80px]"></div>
+        
+        {/* SK Animated Letters */}
+        <div className="relative flex flex-col items-center">
+          <div className="flex items-center space-x-2.5 mb-6">
+            <div className="relative flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 p-[2.5px] shadow-2xl">
+              <div className="absolute inset-0 rounded-3xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 blur-md opacity-75 animate-pulse"></div>
+              <div className="relative w-full h-full bg-[#04050a] rounded-[22px] flex items-center justify-center overflow-hidden">
+                <span className="text-2xl font-black bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent animate-pulse tracking-wide">
+                  SK
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          <h2 className="text-sm font-black tracking-widest text-slate-100 uppercase animate-pulse">
+            sk edz player
+          </h2>
+          <p className="text-[10px] text-slate-500 font-mono tracking-wider mt-1.5 uppercase">
+            Syncing secure audio session...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="relative min-h-screen w-full flex flex-col justify-center items-center bg-[#04050a] overflow-hidden p-6">
+        {/* Background Floating Blobs */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-cyan-500/10 blur-[80px] pointer-events-none animate-pulse"></div>
+        <div className="absolute bottom-1/3 left-1/3 w-72 h-72 rounded-full bg-indigo-500/5 blur-[90px] pointer-events-none animate-pulse" style={{ animationDelay: "1.5s" }}></div>
+        
+        <div className="w-full max-w-md z-10 flex flex-col items-center">
+          {/* Logo & Brand Display */}
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 p-[2px] flex items-center justify-center shadow-lg shadow-cyan-500/10">
+              <img 
+                src="https://i.ibb.co/fd4wBk6f/Picsart-26-07-09-00-40-05-863.jpg" 
+                alt="sk edz Logo" 
+                className="w-full h-full object-cover rounded-2xl" 
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-white bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent">sk edz</h1>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">PREMIUM AUDIO HUB</p>
+            </div>
+          </div>
+
+          <div className="w-full bg-[#0a0d1d]/85 border border-white/10 rounded-[32px] p-6 md:p-8 backdrop-blur-2xl shadow-2xl relative">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
+            
+            <div className="text-center mb-6">
+              <h2 className="text-lg font-bold text-slate-100">Access Restricted</h2>
+              <p className="text-xs text-slate-400 mt-1">Please login or register to unlock premium liquid glass audio streaming</p>
+            </div>
+
+            <AuthPanel onSuccess={() => {}} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`relative min-h-screen w-full flex flex-col ${getBodyBgStyle()} overflow-x-hidden ${isGoldActive ? "gold-theme" : ""} transition-all duration-500`}>
+    <div className={`relative min-h-screen w-full flex flex-col ${getBodyBgStyle()} overflow-x-hidden ${isGoldActive ? "gold-theme" : ""} transition-colors duration-500`}>
       
       {/* Background Floating Blobs */}
       {getBackgroundBlobs()}
@@ -1840,32 +2244,62 @@ export default function App() {
             </button>
           </nav>
 
-          {/* User Profile Card / Settings Trigger */}
-          <div 
-            onClick={() => setIsSettingsOpen(true)}
-            className="flex items-center space-x-2.5 p-1.5 pr-3 rounded-2xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 hover:border-cyan-500/20 backdrop-blur-md shadow-lg transition-all duration-300 cursor-pointer relative z-10"
-            title="Click to open application settings"
-          >
-            <div className="w-7 h-7 rounded-xl overflow-hidden bg-black/40 border border-white/10 relative flex-shrink-0">
-              <img 
-                src={userProfile?.photoURL || (user ? `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}` : `https://api.dicebear.com/7.x/bottts/svg?seed=guest`)} 
-                alt="Profile Avatar" 
-                className="w-full h-full object-cover" 
-                referrerPolicy="no-referrer"
-              />
-              <div className="absolute bottom-0 right-0 w-2 h-2 bg-emerald-500 rounded-full border border-black animate-pulse"></div>
+          {/* Action Buttons: Notifications, Report Issue, Profile/Settings */}
+          <div className="flex items-center space-x-2">
+            {/* Real-time Notifications Bell Button */}
+            <button
+              onClick={() => setIsNotificationsOpen(true)}
+              className="relative p-2.5 rounded-2xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-slate-300 hover:text-cyan-400 backdrop-blur-md transition-all"
+              title="Notifications & Updates"
+            >
+              <Bell className="w-4 h-4" />
+              {userNotifications.filter(n => !n.read).length > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-cyan-400 text-black text-[9px] font-black flex items-center justify-center font-mono shadow-[0_0_8px_rgba(6,182,212,0.8)] animate-pulse">
+                  {userNotifications.filter(n => !n.read).length}
+                </span>
+              )}
+            </button>
+
+            {/* Quick Report Issue Button */}
+            <button
+              onClick={() => {
+                setReportTargetSong(null);
+                setIsReportModalOpen(true);
+              }}
+              className="hidden sm:flex items-center space-x-1.5 px-3 py-2 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 active:scale-95 border border-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-bold transition-all"
+              title="Report an issue or give feedback"
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>Report</span>
+            </button>
+
+            {/* User Profile Card / Settings Trigger */}
+            <div 
+              onClick={() => setIsSettingsOpen(true)}
+              className="flex items-center space-x-2.5 p-1.5 pr-3 rounded-2xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 hover:border-cyan-500/20 backdrop-blur-md shadow-lg transition-all duration-300 cursor-pointer relative z-10"
+              title="Click to open application settings"
+            >
+              <div className="w-7 h-7 rounded-xl overflow-hidden bg-black/40 border border-white/10 relative flex-shrink-0">
+                <img 
+                  src={userProfile?.photoURL || (user ? `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}` : `https://api.dicebear.com/7.x/bottts/svg?seed=guest`)} 
+                  alt="Profile Avatar" 
+                  className="w-full h-full object-cover" 
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute bottom-0 right-0 w-2 h-2 bg-emerald-500 rounded-full border border-black animate-pulse"></div>
+              </div>
+              
+              <div className="text-left hidden sm:block">
+                <span className="block text-xs font-black text-white truncate max-w-[100px]">
+                  {userProfile?.displayName || (user ? "skplayer Listener" : "Guest Listener")}
+                </span>
+                <span className="block text-[8px] font-mono text-slate-400 leading-none">
+                  {isGoldActive ? "👑 VIP GOLD" : "Standard"}
+                </span>
+              </div>
+              
+              <Settings className="w-3.5 h-3.5 text-slate-400 hover:text-cyan-400 transition-colors flex-shrink-0" />
             </div>
-            
-            <div className="text-left hidden sm:block">
-              <span className="block text-xs font-black text-white truncate max-w-[100px]">
-                {userProfile?.displayName || (user ? "skplayer Listener" : "Guest Listener")}
-              </span>
-              <span className="block text-[8px] font-mono text-slate-400 leading-none">
-                {isGoldActive ? "👑 VIP GOLD" : "Standard"}
-              </span>
-            </div>
-            
-            <Settings className="w-3.5 h-3.5 text-slate-400 hover:text-cyan-400 transition-colors flex-shrink-0" />
           </div>
         </header>
 
@@ -1875,7 +2309,8 @@ export default function App() {
           {/* 1. DISCOVER / HOME VIEW */}
           {activeTab === "home" && !selectedPlaylist && (
             <div className="space-y-6 animate-fade-in">
-              {/* New Releases Section (Replaced Trending and removed play counts) */}
+              <div className="space-y-6">
+                {/* New Releases Section (Replaced Trending and removed play counts) */}
               <div className="space-y-4">
                 <div className="flex justify-between items-center px-1">
                   <div>
@@ -1890,11 +2325,17 @@ export default function App() {
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   {loadingSongs ? (
                     [...Array(4)].map((_, i) => (
-                      <div key={i} className="animate-pulse bg-white/5 border border-white/5 rounded-2xl p-4 h-28 flex flex-col justify-between">
-                        <div className="w-8 h-8 rounded-lg bg-white/10"></div>
-                        <div className="space-y-2">
+                      <div key={i} className="animate-pulse bg-white/5 border border-white/5 rounded-2xl p-3.5 h-32 md:h-36 flex flex-col justify-between">
+                        <div className="flex justify-between items-start">
+                          <div className="relative w-11 h-11 md:w-14 md:h-14 rounded-xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center">
+                            <span className="text-[10px] font-black text-cyan-400/50">SK</span>
+                          </div>
+                          <div className="h-4 w-12 rounded bg-white/5"></div>
+                        </div>
+                        <div className="space-y-1.5 mt-3">
                           <div className="h-3 w-3/4 rounded bg-white/10"></div>
-                          <div className="h-2.5 w-1/2 rounded bg-white/10"></div>
+                          <div className="h-2.5 w-1/2 rounded bg-white/5"></div>
+                          <div className="h-2 w-8 rounded bg-white/5"></div>
                         </div>
                       </div>
                     ))
@@ -1958,12 +2399,30 @@ export default function App() {
                   </div>
                 </div>
 
-                {loadingSongs ? (
-                  <div className="flex flex-col items-center justify-center py-16">
-                    <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mb-3" />
-                    <span className="text-xs font-mono text-slate-400">Syncing with skplayer cloud...</span>
-                  </div>
-                ) : songs.length === 0 ? (
+                 {loadingSongs ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {[...Array(6)].map((_, i) => (
+                        <div 
+                          key={`skeleton-cloud-song-${i}`}
+                          className="flex items-center justify-between p-3.5 bg-white/5 border border-white/5 rounded-2xl relative overflow-hidden animate-pulse"
+                        >
+                          <div className="flex items-center space-x-3.5 min-w-0 flex-1">
+                            <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex-shrink-0 flex items-center justify-center shadow-md">
+                              <span className="text-xs font-black text-cyan-400/50">SK</span>
+                            </div>
+                            <div className="flex-1 space-y-2 min-w-0">
+                              <div className="h-3 bg-white/10 rounded w-2/3"></div>
+                              <div className="h-2.5 bg-white/5 rounded w-1/2"></div>
+                              <div className="flex space-x-1">
+                                <div className="h-2 bg-white/5 rounded w-8"></div>
+                                <div className="h-2 bg-white/5 rounded w-12"></div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : songs.length === 0 ? (
                   <div className="p-8 border border-dashed border-white/10 rounded-3xl bg-white/5 text-center">
                     <Info className="w-10 h-10 text-slate-500 mx-auto mb-3" />
                     <h3 className="text-sm font-bold text-slate-300">Your cloud song library is empty</h3>
@@ -2097,7 +2556,8 @@ export default function App() {
                 )}
               </div>
             </div>
-          )}
+          </div>
+        )}
 
           {/* 2. SEARCH BAR VIEW */}
           {activeTab === "search" && !selectedPlaylist && (
@@ -2138,7 +2598,24 @@ export default function App() {
 
               {/* Filtered songs list */}
               <div className="space-y-3">
-                {filteredSongs.length === 0 ? (
+                {loadingSongs ? (
+                  [...Array(5)].map((_, i) => (
+                    <div 
+                      key={`search-skeleton-${i}`}
+                      className="flex items-center justify-between p-3.5 bg-white/5 border border-white/5 rounded-2xl animate-pulse"
+                    >
+                      <div className="flex items-center space-x-3.5 min-w-0 flex-1">
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center flex-shrink-0">
+                          <span className="text-[10px] font-black text-cyan-400/50">SK</span>
+                        </div>
+                        <div className="flex-1 space-y-2 min-w-0">
+                          <div className="h-3.5 bg-white/10 rounded w-1/2"></div>
+                          <div className="h-2.5 bg-white/5 rounded w-1/3"></div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : filteredSongs.length === 0 ? (
                   <div className="p-12 text-center text-slate-400 border border-dashed border-white/10 rounded-2xl">
                     <p className="text-sm">No songs match your query or category.</p>
                     <p className="text-xs text-slate-500 mt-1">Try searching for keywords like "Single" or other artist tags.</p>
@@ -2241,47 +2718,42 @@ export default function App() {
                       </div>
                       
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Playlist Thumbnail</label>
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <label className="flex-1 flex items-center justify-center border border-dashed border-white/20 hover:border-cyan-400/50 bg-white/5 hover:bg-white/8 p-3 rounded-2xl cursor-pointer transition-all text-xs font-semibold text-slate-300">
-                              <Upload className="w-4 h-4 mr-2 text-cyan-400 animate-pulse" />
-                              <span>{uploadingImage ? "Uploading to ImgBB..." : "Upload Cover Image"}</span>
-                              <input 
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                disabled={uploadingImage}
-                                onChange={async (e) => {
-                                  if (e.target.files && e.target.files[0]) {
-                                    setUploadingImage(true);
-                                    try {
-                                      const url = await uploadToImgBB(e.target.files[0]);
-                                      if (url) {
-                                        setNewPlaylistThumbnail(url);
-                                      }
-                                    } catch (err) {
-                                      console.error("ImgBB upload failed", err);
-                                      alert("ImgBB upload failed.");
-                                    } finally {
-                                      setUploadingImage(false);
-                                    }
-                                  }
-                                }}
-                              />
-                            </label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Playlist Thumbnail URL</label>
+                        <input 
+                          type="text" 
+                          placeholder="Paste cover image link/URL..." 
+                          value={newPlaylistThumbnail}
+                          onChange={(e) => setNewPlaylistThumbnail(e.target.value)}
+                          className="w-full px-4 py-3 bg-white/5 border border-white/10 focus:border-cyan-400/50 rounded-2xl text-slate-100 outline-none transition-all placeholder-slate-500 text-xs mb-3"
+                        />
+                        
+                        {/* File upload for Playlist Thumbnail */}
+                        <div className="relative flex items-center justify-center border border-dashed border-white/15 rounded-2xl p-4 hover:border-cyan-500/30 transition-all group bg-white/5 cursor-pointer">
+                          <input 
+                            type="file" 
+                            accept="image/*"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                try {
+                                  setUploadingImage(true);
+                                  const url = await uploadToLocalServer(file, "playlist");
+                                  setNewPlaylistThumbnail(url);
+                                } catch (err) {
+                                  alert("Failed to upload playlist thumbnail.");
+                                } finally {
+                                  setUploadingImage(false);
+                                }
+                              }
+                            }}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          />
+                          <div className="text-center">
+                            <span className="text-xs text-slate-300 font-medium block">Or Upload Image File</span>
+                            <span className="text-[10px] text-slate-500 block">JPG, PNG up to 5MB</span>
                           </div>
-                          
-                          <div className="relative flex items-center">
-                            <span className="text-[9px] text-slate-500 absolute left-3 pointer-events-none uppercase font-black">OR</span>
-                            <input 
-                              type="url" 
-                              placeholder="Paste cover image link/URL..." 
-                              value={newPlaylistThumbnail}
-                              onChange={(e) => setNewPlaylistThumbnail(e.target.value)}
-                              className="w-full pl-9 pr-4 py-3 bg-white/5 border border-white/10 focus:border-cyan-400/50 rounded-2xl text-slate-100 outline-none transition-all placeholder-slate-500 text-xs"
-                            />
-                          </div>
+                        </div>
+                      </div>
 
                           {newPlaylistThumbnail && (
                             <div className="relative w-16 h-16 rounded-xl overflow-hidden border border-white/10 mx-auto mt-1 bg-black/40">
@@ -2296,8 +2768,6 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                      </div>
-                    </div>
 
                     <div className="flex space-x-3">
                       <button
@@ -2332,6 +2802,23 @@ export default function App() {
                   >
                     Go to Account Profile
                   </button>
+                </div>
+              ) : loadingSongs ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6 animate-pulse">
+                  {[...Array(4)].map((_, i) => (
+                    <div 
+                      key={`playlists-skeleton-${i}`}
+                      className="bg-[#090b16]/70 border border-white/5 rounded-3xl p-3.5 flex flex-col justify-between h-64"
+                    >
+                      <div className="relative aspect-square w-full rounded-2xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center">
+                        <span className="text-sm font-black text-cyan-400/50">SK</span>
+                      </div>
+                      <div className="space-y-2 mt-4">
+                        <div className="h-3.5 bg-white/10 rounded w-2/3"></div>
+                        <div className="h-2.5 bg-white/5 rounded w-1/3"></div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : playlists.length === 0 ? (
                 <div className="p-12 text-center text-slate-400 border border-dashed border-white/10 rounded-3xl bg-white/5">
@@ -2396,32 +2883,19 @@ export default function App() {
                       {/* Cover Edit & Delete Controls */}
                       <div className="flex items-center justify-between border-t border-white/5 mt-4 pt-3 px-0.5">
                         <div onClick={(e) => e.stopPropagation()}>
-                          <label className="text-[10px] font-bold font-mono text-cyan-400 hover:text-cyan-300 transition-all bg-cyan-500/10 border border-cyan-500/20 px-2.5 py-1 rounded-lg cursor-pointer inline-flex items-center space-x-1">
-                            <Upload className="w-3 h-3" />
-                            <span>{uploadingImage ? "Uploading..." : "Edit Cover"}</span>
-                            <input 
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              disabled={uploadingImage}
-                              onChange={async (e) => {
-                                if (e.target.files && e.target.files[0]) {
-                                  setUploadingImage(true);
-                                  try {
-                                    const url = await uploadToImgBB(e.target.files[0]);
-                                    if (url) {
-                                      await handleUpdatePlaylistThumbnail(pl.id, url);
-                                    }
-                                  } catch (err) {
-                                    console.error("ImgBB playlist cover upload failed:", err);
-                                    alert("ImgBB upload failed.");
-                                  } finally {
-                                    setUploadingImage(false);
-                                  }
-                                }
-                              }}
-                            />
-                          </label>
+                          <button 
+                            onClick={async () => {
+                              const currentUrl = pl.thumbnailUrl || "";
+                              const newUrl = prompt("Enter new Playlist Cover Image URL link:", currentUrl);
+                              if (newUrl !== null) {
+                                await handleUpdatePlaylistThumbnail(pl.id, newUrl);
+                              }
+                            }}
+                            className="text-[10px] font-bold font-mono text-cyan-400 hover:text-cyan-300 transition-all bg-cyan-500/10 border border-cyan-500/20 px-2.5 py-1 rounded-lg inline-flex items-center space-x-1"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Edit Cover Link</span>
+                          </button>
                         </div>
                         
                         {playlistDeleteConfirmId === pl.id ? (
@@ -2481,7 +2955,16 @@ export default function App() {
               {/* Playlist Header card */}
               <div className="p-6 bg-gradient-to-br from-indigo-950/25 to-black/30 border border-white/5 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-2xl">
                 <div className="flex items-center space-x-4">
-                  <label className="relative group w-16 h-16 rounded-2xl overflow-hidden bg-gradient-to-tr from-cyan-400 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-cyan-500/10 flex-shrink-0 cursor-pointer">
+                  <div 
+                    onClick={async () => {
+                      const currentUrl = selectedPlaylist.thumbnailUrl || "";
+                      const newUrl = prompt("Enter new Thumbnail Image URL link:", currentUrl);
+                      if (newUrl !== null) {
+                        await handleUpdatePlaylistThumbnail(selectedPlaylist.id, newUrl);
+                      }
+                    }}
+                    className="relative group w-16 h-16 rounded-2xl overflow-hidden bg-gradient-to-tr from-cyan-400 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-cyan-500/10 flex-shrink-0 cursor-pointer"
+                  >
                     {selectedPlaylist.thumbnailUrl ? (
                       <img 
                         src={selectedPlaylist.thumbnailUrl} 
@@ -2493,31 +2976,9 @@ export default function App() {
                       <ListMusic className="w-8 h-8" />
                     )}
                     <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      <Upload className="w-4 h-4 text-cyan-400" />
+                      <ExternalLink className="w-4 h-4 text-cyan-400" />
                     </div>
-                    <input 
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      disabled={uploadingImage}
-                      onChange={async (e) => {
-                        if (e.target.files && e.target.files[0]) {
-                          setUploadingImage(true);
-                          try {
-                            const url = await uploadToImgBB(e.target.files[0]);
-                            if (url) {
-                              await handleUpdatePlaylistThumbnail(selectedPlaylist.id, url);
-                            }
-                          } catch (err) {
-                            console.error("ImgBB playlist cover upload failed:", err);
-                            alert("ImgBB upload failed.");
-                          } finally {
-                            setUploadingImage(false);
-                          }
-                        }
-                      }}
-                    />
-                  </label>
+                  </div>
                   <div>
                     <span className="text-[10px] font-mono text-cyan-400 font-semibold uppercase">CUSTOM COMPILATION</span>
                     <h2 className="text-2xl font-bold text-white tracking-tight">{selectedPlaylist.name}</h2>
@@ -2869,14 +3330,27 @@ export default function App() {
                           </div>
 
                           {isGoldActive ? (
-                            <div className="flex flex-col items-start md:items-end space-y-1.5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 min-w-[200px]">
-                              <span className="text-[10px] font-bold text-amber-400 font-mono flex items-center space-x-1 uppercase">
-                                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1"></span>
-                                PRO ACTIVE
+                            <div className="flex flex-col items-start md:items-end space-y-1.5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 min-w-[220px]">
+                              <div className="flex items-center space-x-2">
+                                <span className="text-[10px] font-bold text-amber-400 font-mono flex items-center space-x-1 uppercase">
+                                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1"></span>
+                                  VIP ACTIVE
+                                </span>
+                                {userProfile?.plan === 199 ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-500 to-amber-500 text-black text-[9px] font-black font-mono shadow-sm">
+                                    👑 ₹199 MASTER
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-400 text-black text-[9px] font-black font-mono shadow-sm">
+                                    💎 ₹99 GOLD
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs font-mono text-amber-200/90 font-bold">
+                                {userProfile?.planName || (userProfile?.plan === 199 ? "₹199 VIP Master Pass (1 Year)" : "₹99 VIP Gold Pass (1 Month)")}
                               </span>
-                              <span className="text-xs font-mono text-slate-300">Pass validity: 30 Days</span>
                               <span className="text-[10px] text-slate-400 font-mono">
-                                Expires: {userProfile?.proExpiresAt ? new Date(userProfile.proExpiresAt).toLocaleDateString() : ""}
+                                Expires: {userProfile?.proExpiresAt ? new Date(userProfile.proExpiresAt).toLocaleDateString() : "Active"}
                               </span>
                             </div>
                           ) : (
@@ -2917,79 +3391,128 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Direct Profile Pic Upload Panel (ImgBB) */}
+                      {/* Customize Avatar Panel (URL & Local Upload) */}
                       <div className="glass-card rounded-3xl p-6 space-y-4">
                         <div>
                           <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
-                            <UploadCloud className="w-5 h-5 text-cyan-400" />
+                            <Paintbrush className="w-5 h-5 text-cyan-400" />
                             <span>Customize Avatar</span>
                           </h3>
-                          <p className="text-xs text-slate-400 mt-0.5">Upload a photo to ImgBB or set a direct image URL link</p>
+                          <p className="text-xs text-slate-400 mt-0.5">Upload an image file or enter a direct image URL link to customize your profile avatar picture</p>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {/* ImgBB File Picker */}
-                          <div className="border border-white/5 rounded-2xl p-4 bg-black/10 flex flex-col justify-between">
-                            <div>
-                              <span className="text-[10px] font-mono text-cyan-400 font-bold block mb-2">IMGBB DIRECT UPLOAD</span>
-                              <div className="relative border border-dashed border-white/15 rounded-xl p-6 hover:border-cyan-500/30 transition-all text-center cursor-pointer bg-white/5">
-                                <input 
-                                  type="file" 
-                                  accept="image/*"
-                                  onChange={handlePfpUpload}
-                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                />
-                                <UploadCloud className="w-7 h-7 text-slate-400 mx-auto mb-2" />
-                                <span className="text-xs font-semibold text-slate-300 block">Select Avatar Image</span>
-                                <span className="text-[10px] text-slate-500">JPG, PNG, WEBP</span>
-                              </div>
-                            </div>
-
-                            {/* Progress indicator */}
-                            {pfpProgress > 0 && (
-                              <div className="mt-3">
-                                <div className="flex justify-between text-[10px] font-mono text-slate-400 mb-1">
-                                  <span>Uploading...</span>
-                                  <span>{pfpProgress}%</span>
-                                </div>
-                                <div className="w-full bg-white/5 h-1 rounded-full overflow-hidden">
-                                  <div className="h-full bg-cyan-400 transition-all" style={{ width: `${pfpProgress}%` }}></div>
-                                </div>
-                              </div>
-                            )}
-
-                            {pfpMessage && (
-                              <p className="text-[10px] font-mono text-center mt-2 text-slate-300 bg-[#0c0f1e] p-2.5 rounded-xl border border-white/5">
-                                {pfpMessage}
-                              </p>
-                            )}
-                          </div>
-
-                          {/* Direct URL input */}
-                          <div className="border border-white/5 rounded-2xl p-4 bg-black/10 flex flex-col justify-between">
-                            <div>
-                              <span className="text-[10px] font-mono text-pink-400 font-bold block mb-2">PASTE DIRECT IMAGE URL</span>
+                          <div className="border border-white/5 rounded-2xl p-4 bg-black/10">
+                            <span className="text-[10px] font-mono text-pink-400 font-bold block mb-2">PASTE DIRECT IMAGE URL</span>
+                            <div className="flex flex-col gap-3">
                               <input 
-                                type="url" 
+                                type="text" 
                                 placeholder="https://example.com/photo.jpg" 
                                 value={pfpUrlInput}
                                 onChange={(e) => setPfpUrlInput(e.target.value)}
                                 className="w-full px-3 py-2.5 bg-white/5 border border-white/10 focus:border-cyan-400/30 rounded-xl text-slate-200 outline-none transition-all placeholder-slate-600 text-xs"
                               />
+                              <button
+                                onClick={() => pfpUrlInput && updateProfilePicture(pfpUrlInput)}
+                                disabled={!pfpUrlInput}
+                                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-xs font-bold transition-all hover:scale-[1.02] disabled:opacity-50"
+                              >
+                                Save Avatar Link
+                              </button>
                             </div>
-                            <button
-                              onClick={() => pfpUrlInput && updateProfilePicture(pfpUrlInput)}
-                              disabled={!pfpUrlInput}
-                              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-xs font-bold transition-all hover:scale-[1.02] disabled:opacity-50 mt-4"
-                            >
-                              Save Avatar Link
-                            </button>
+                          </div>
+
+                          <div className="border border-white/5 rounded-2xl p-4 bg-black/10 flex flex-col justify-between">
+                            <div>
+                              <span className="text-[10px] font-mono text-cyan-400 font-bold block mb-2">UPLOAD PHOTO FILE</span>
+                              <div className="relative flex items-center justify-center border border-dashed border-white/15 rounded-xl p-3 hover:border-cyan-500/30 transition-all group bg-white/5 cursor-pointer">
+                                <input 
+                                  type="file" 
+                                  accept="image/*"
+                                  onChange={handlePfpUpload}
+                                  disabled={uploadingImage}
+                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                />
+                                <div className="text-center">
+                                  <span className="text-xs text-slate-300 font-medium block">Choose Photo</span>
+                                  <span className="text-[10px] text-slate-500 block">JPG, PNG, GIF up to 5MB</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {pfpMessage && (
+                              <p className="text-[10px] font-mono text-cyan-400 mt-2 text-center">{pfpMessage}</p>
+                            )}
+
+                            {pfpProgress > 0 && pfpProgress < 100 && (
+                              <div className="w-full bg-white/5 h-1 rounded-full overflow-hidden mt-2">
+                                <div className="h-full bg-cyan-400 transition-all duration-300" style={{ width: `${pfpProgress}%` }}></div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
 
-                      {/* Settings / Navigation helper */}
+                      {/* Help, Support & Issue Reporting Section */}
+                      <div className="glass-card rounded-3xl p-6 space-y-4 border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-transparent">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                              <MessageSquare className="w-5 h-5 text-cyan-400" />
+                              <span>Support & Report Center</span>
+                            </h3>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              Facing broken tracks, playback errors, VIP key issues or need assistance? Submit a direct report to our Admin.
+                            </p>
+                          </div>
+                          {isGoldActive && (
+                            <span className="hidden sm:inline-flex items-center space-x-1 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-mono font-bold">
+                              <Crown className="w-3 h-3" />
+                              <span>VIP Priority Active</span>
+                            </span>
+                          )}
+                        </div>
 
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReportTargetSong(null);
+                              setIsReportModalOpen(true);
+                            }}
+                            className="p-4 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/25 flex items-center space-x-3.5 text-left transition-all hover:scale-[1.01] active:scale-[0.99] group"
+                          >
+                            <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-400 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
+                              <AlertTriangle className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-xs font-bold text-white block">Submit New Report</span>
+                              <span className="text-[11px] text-slate-400 block">Report glitch, broken link or song bug</span>
+                            </div>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setIsNotificationsOpen(true)}
+                            className="p-4 rounded-2xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/25 flex items-center space-x-3.5 text-left transition-all hover:scale-[1.01] active:scale-[0.99] group relative"
+                          >
+                            <div className="w-10 h-10 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-400 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
+                              <Bell className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center space-x-2">
+                                <span className="text-xs font-bold text-white block">Admin Notifications</span>
+                                {userNotifications.filter(n => !n.read).length > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded-full bg-cyan-400 text-black text-[9px] font-bold font-mono">
+                                    {userNotifications.filter(n => !n.read).length} New
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-slate-400 block">Check status of your submitted reports</span>
+                            </div>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -3122,13 +3645,6 @@ export default function App() {
 
             {/* Volume Control Sliders - PC only */}
             <div className="hidden md:flex items-center space-x-3.5">
-              <button 
-                onClick={() => setIsEqualizerOpen(true)}
-                className="p-1.5 rounded-lg bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 text-cyan-400 hover:text-cyan-300 transition-all flex items-center justify-center"
-                title="Open Equalizer & Bass Boost"
-              >
-                <Sliders className="w-4 h-4" />
-              </button>
               <button onClick={toggleMute} className="text-slate-400 hover:text-white transition-colors">
                 {isMuted || volume === 0 ? (
                   <VolumeX className="w-4 h-4 text-red-400" />
@@ -3769,6 +4285,214 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* 1. TUTORIAL QUESTION PROMPT OVERLAY */}
+      {showTutorialQuestion && (
+        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none animate-fade-in animate-duration-300">
+          <div className="relative w-full max-w-md bg-[#0a0d1d]/90 border border-white/10 rounded-[32px] p-6 md:p-8 backdrop-blur-2xl shadow-2xl overflow-hidden text-center">
+            {/* Ambient Background Glow */}
+            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            
+            <div className="relative z-10 space-y-5">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-400 to-indigo-500 p-[2px] flex items-center justify-center mx-auto shadow-lg shadow-cyan-500/15">
+                <Sparkles className="w-6 h-6 text-white animate-pulse" />
+              </div>
+              
+              <div className="space-y-2">
+                <h2 className="text-xl font-extrabold text-white tracking-tight">Welcome to sk edz! 🎧</h2>
+                <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
+                  Do you want a quick premium tutorial? We'll show you exactly how to unlock professional lossless audio quality and configure deep, rich bass settings!
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-3">
+                <button
+                  onClick={handleStartTutorial}
+                  className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-bold text-xs transition-all hover:scale-[1.02] active:scale-95 shadow-lg shadow-cyan-500/15"
+                >
+                  Yes, Show Me! ✨
+                </button>
+                <button
+                  onClick={handleSkipOrCompleteTutorial}
+                  className="flex-1 py-3 px-4 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white font-bold text-xs transition-all hover:scale-[1.02] active:scale-95"
+                >
+                  No, direct open 🎧
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. STEP-BY-STEP TUTORIAL MODAL OVERLAY */}
+      {showTutorial && (
+        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none animate-fade-in animate-duration-300">
+          <div className="relative w-full max-w-lg bg-[#0e1124]/95 border border-white/10 rounded-[32px] p-6 md:p-8 backdrop-blur-2xl shadow-2xl overflow-hidden flex flex-col">
+            
+            {/* Header / Steps Indicator */}
+            <div className="relative z-10 flex justify-between items-center pb-4 border-b border-white/5">
+              <span className="text-[10px] font-mono tracking-widest text-cyan-400 uppercase font-extrabold">PREMIUM USER TUTORIAL</span>
+              <span className="text-xs text-slate-400 font-mono">Step {tutorialStep + 1} of 3</span>
+            </div>
+
+            {/* Tutorial Content Cards based on step */}
+            <div className="relative z-10 py-6 min-h-[220px] flex flex-col justify-center">
+              
+              {tutorialStep === 0 && (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2 bg-cyan-500/15 border border-cyan-500/20 rounded-xl text-cyan-400">
+                      <Volume2 className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-100">1. Lossless Audio Quality</h3>
+                  </div>
+                  
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    sk edz supports two powerful streaming quality modes:
+                  </p>
+                  
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                      <span className="text-xs font-bold text-slate-200 block">128kbps Standard</span>
+                      <span className="text-[10px] text-slate-400 mt-1 block">Data-saving, flattish response.</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 relative">
+                      <Crown className="w-3.5 h-3.5 text-amber-500 absolute top-2 right-2" />
+                      <span className="text-xs font-bold text-amber-400 block">320kbps Lossless</span>
+                      <span className="text-[10px] text-amber-300 mt-1 block">Crisp vocals, wide highs, deep low end.</span>
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-400 italic leading-relaxed pt-2">
+                    💡 <span className="font-semibold text-slate-300">How to use</span>: Click the <span className="text-cyan-400 font-semibold font-mono">Gear icon (Settings)</span> in the top-right header, expand the <span className="text-cyan-400 font-semibold font-mono">Audio Quality</span> tab, and select 320kbps!
+                  </p>
+                </div>
+              )}
+
+              {tutorialStep === 1 && (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2 bg-indigo-500/15 border border-indigo-500/20 rounded-xl text-indigo-400">
+                      <Sliders className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-100">2. Pro Equalizer & Bass Boost</h3>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Supercharge your sound! You have full manual control over 5 high-fidelity bands to optimize bass response.
+                  </p>
+
+                  <div className="bg-black/30 border border-white/5 rounded-xl p-3 flex justify-between items-center text-xs text-slate-300">
+                    <div>
+                      <span className="font-bold text-cyan-400">Manual Controls:</span>
+                      <span className="block text-[10px] text-slate-400 mt-0.5">Amplify 60Hz & 230Hz sliders for custom warm bass.</span>
+                    </div>
+                    <div className="px-2.5 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/30 text-[10px] font-mono text-indigo-300 font-bold">
+                      Bass Boost Preset
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-400 italic leading-relaxed pt-2">
+                    💡 <span className="font-semibold text-slate-300">How to use</span>: Click the <span className="text-cyan-400 font-semibold font-mono">Equalizer icon (sliders)</span> inside the music player, then select the <span className="text-cyan-400 font-semibold">Bass Boost</span> preset or slide 60Hz up manually!
+                  </p>
+                </div>
+              )}
+
+              {tutorialStep === 2 && (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2 bg-amber-500/15 border border-amber-500/20 rounded-xl text-amber-400">
+                      <Crown className="w-5 h-5 fill-amber-400/10" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-100">3. VIP Gold Bass Enhancer</h3>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed font-sans">
+                    Take your acoustic setup to the absolute limits with the exclusive subwoofer enhancer!
+                  </p>
+
+                  <div className="p-3.5 rounded-xl bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 text-[11px] text-amber-300 leading-relaxed">
+                    ✨ Injects a rich, heavy sub-bass tone at <span className="font-bold font-mono">45Hz</span> directly on top of your standard EQ presets. Protected by a digital peak limiter for smooth, clean sound.
+                  </div>
+
+                  <p className="text-[10px] text-slate-400 italic leading-relaxed pt-2">
+                    💡 <span className="font-semibold text-slate-300">How to use</span>: In the Pro Equalizer, toggle the <span className="text-amber-400 font-bold">VIP Gold Bass Enhancer</span> switch. (Requires Pro pass active).
+                  </p>
+                </div>
+              )}
+
+            </div>
+
+            {/* Bottom Navigation Panel */}
+            <div className="relative z-10 flex justify-between items-center border-t border-white/5 pt-4 mt-auto">
+              <button
+                onClick={handleSkipOrCompleteTutorial}
+                className="text-xs text-slate-400 hover:text-slate-200 transition-colors font-bold"
+              >
+                Skip
+              </button>
+
+              {/* Steps Pagination indicators */}
+              <div className="flex space-x-2">
+                {[0, 1, 2].map((step) => (
+                  <div 
+                    key={`dot-${step}`} 
+                    className={`w-1.5 h-1.5 rounded-full transition-all ${
+                      tutorialStep === step ? "w-4 bg-cyan-400" : "bg-white/10"
+                    }`}
+                  />
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                {tutorialStep > 0 && (
+                  <button
+                    onClick={() => setTutorialStep(prev => prev - 1)}
+                    className="px-3.5 py-2 rounded-xl bg-white/5 border border-white/5 text-slate-300 hover:text-white transition-all text-xs font-bold"
+                  >
+                    Back
+                  </button>
+                )}
+                
+                <button
+                  onClick={() => {
+                    if (tutorialStep < 2) {
+                      setTutorialStep(prev => prev + 1);
+                    } else {
+                      handleSkipOrCompleteTutorial();
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white transition-all hover:scale-[1.02] active:scale-95 text-xs font-bold shadow-md shadow-cyan-500/10"
+                >
+                  {tutorialStep === 2 ? "Finish 🎉" : "Next →"}
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Report an Issue Modal */}
+      <ReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => {
+          setIsReportModalOpen(false);
+          setReportTargetSong(null);
+        }}
+        user={user}
+        userProfile={userProfile}
+        isVIP={isGoldActive}
+        song={reportTargetSong}
+        onSuccess={() => {}}
+      />
+
+      {/* Notifications Center Modal */}
+      <NotificationsCenter
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        notifications={userNotifications}
+      />
 
     </div>
   );

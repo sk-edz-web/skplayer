@@ -74,18 +74,6 @@ export default function MobilePlayerOverlay({
   const touchStartX = useRef<number>(0);
   const touchStartY = useRef<number>(0);
 
-  // Prevent background body scroll when the player overlay is active
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isOpen]);
-
   const triggerSwipe = (dir: "left" | "right", action: () => void) => {
     setSwipeAction(dir);
     setTimeout(() => {
@@ -165,15 +153,10 @@ export default function MobilePlayerOverlay({
 
   return (
     <div 
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseLeave}
-      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center select-none overflow-hidden cursor-grab active:cursor-grabbing"
+      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center select-none overflow-hidden"
     >
       {/* Centered Glass Player Card on Desktop, Full Screen on Mobile */}
-      <div className="relative w-full h-full md:max-h-[92vh] md:h-[92vh] md:max-w-md bg-[#070811]/95 md:border md:border-white/10 rounded-none md:rounded-[32px] p-6 flex flex-col justify-between overflow-y-auto shadow-2xl animate-slide-up custom-scrollbar">
+      <div className="relative w-full h-full md:max-h-[92vh] md:h-[92vh] md:max-w-md bg-[#070811]/95 md:border md:border-white/10 rounded-none md:rounded-[32px] p-6 flex flex-col justify-between overflow-y-auto overflow-x-hidden shadow-2xl animate-slide-up scrollbar-none">
         
         {/* Organic Background Blobs */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-cyan-500/15 blur-[80px] pointer-events-none animate-pulse"></div>
@@ -238,8 +221,13 @@ export default function MobilePlayerOverlay({
 
       {/* Custom CD Pack Sleeve Centerpiece - Tapping toggles open/close */}
       <div 
-        className="relative z-10 my-4 flex flex-col items-center justify-center w-full cursor-pointer"
+        className="relative z-10 my-4 flex flex-col items-center justify-center w-full cursor-grab active:cursor-grabbing select-none"
         onClick={onClickCenterpiece}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
       >
         <div className={`relative flex items-center justify-center h-[260px] md:h-[300px] w-full max-w-sm overflow-visible transition-all duration-300 ease-out ${
           swipeAction === "left" 
