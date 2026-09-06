@@ -16,7 +16,8 @@ import {
   orderBy,
   updateDoc,
   setDoc,
-  onSnapshot
+  onSnapshot,
+  writeBatch
 } from "firebase/firestore";
 import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
 import { 
@@ -68,11 +69,13 @@ import {
   CornerDownRight,
   ChevronRight,
   Copy,
-  Youtube,
-  Zap
+  Zap,
+  Users,
+  UserCheck
 } from "lucide-react";
-import { Song, ReportItem, ReportStatus, AppNotification, SubscriptionKey } from "./types";
+import { Song, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
+import AdminArtistsManager from "./components/AdminArtistsManager";
 import "./index.css";
 
 interface ID3Metadata {
@@ -205,7 +208,15 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "keys" | "reports">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "artists" | "keys" | "reports">("songs");
+
+  // Artist Profiles State
+  const [artistsList, setArtistsList] = useState<ArtistProfile[]>([]);
+  const [loadingArtists, setLoadingArtists] = useState<boolean>(true);
+  const [selectedArtistId, setSelectedArtistId] = useState<string | null>(null);
+  const [selectedArtistImage, setSelectedArtistImage] = useState<string | null>(null);
+  const [showArtistDropdown, setShowArtistDropdown] = useState<boolean>(false);
+  const [artistFilterQuery, setArtistFilterQuery] = useState<string>("");
 
   // Reports Management State
   const [reports, setReports] = useState<ReportItem[]>([]);
@@ -228,10 +239,7 @@ function AdminApp() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [loadingSongs, setLoadingSongs] = useState(true);
 
-  // Form State & Upload Mode (Separated YouTube vs Direct Audio)
-  const [uploadMode, setUploadMode] = useState<"youtube" | "direct">("youtube");
-  const [youtubeUrlInput, setYoutubeUrlInput] = useState<string>("");
-  const [isFetchingYoutubeMeta, setIsFetchingYoutubeMeta] = useState<boolean>(false);
+  // Form State
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
@@ -447,64 +455,6 @@ function AdminApp() {
     return () => clearTimeout(timer);
   }, [audioUrl]);
 
-  // Helper to extract YouTube video ID from various link formats
-  const extractYouTubeId = (url: string): string | null => {
-    if (!url) return null;
-    const trimmed = url.trim();
-    if (trimmed.length === 11 && !trimmed.includes("/") && !trimmed.includes(".") && !trimmed.includes("?")) {
-      return trimmed;
-    }
-    const match = trimmed.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
-    return match && match[1] ? match[1] : null;
-  };
-
-  // Handler to auto-fetch metadata for YouTube video
-  const handleFetchYouTubeMeta = async (overrideUrl?: string) => {
-    const rawUrl = overrideUrl || youtubeUrlInput;
-    if (!rawUrl || !rawUrl.trim()) {
-      setStatusMessage("Please paste a YouTube URL first.");
-      return;
-    }
-
-    const videoId = extractYouTubeId(rawUrl);
-    if (!videoId) {
-      setStatusMessage("Invalid YouTube URL. Please provide a standard video, shorts, or share link.");
-      return;
-    }
-
-    setIsFetchingYoutubeMeta(true);
-    setStatusMessage("Extracting YouTube audio stream and metadata (pure audio, no video/ads)...");
-
-    try {
-      const response = await fetch(`/api/youtube-info?url=${encodeURIComponent(rawUrl)}`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.title) setTitle(data.title);
-        if (data.artist) setArtist(data.artist);
-        if (data.imageUrl) {
-          setImageUrl(data.imageUrl);
-          setImageStatus("available");
-        }
-        if (data.duration) setDuration(data.duration);
-        setAudioUrl(`/api/youtube-stream?id=${videoId}&audioOnly=true`);
-        setStatusMessage(`Successfully extracted "${data.title || videoId}"! 🎵`);
-        showAdminToast("YouTube audio extracted successfully!", "success");
-      } else {
-        throw new Error(`Server returned ${response.status}`);
-      }
-    } catch (err) {
-      console.warn("YouTube API extraction warning:", err);
-      // Fallback: set stream url directly and HQ thumbnail
-      setAudioUrl(`/api/youtube-stream?id=${videoId}&audioOnly=true`);
-      setImageUrl(`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`);
-      setImageStatus("available");
-      setStatusMessage("YouTube stream link and thumbnail configured!");
-      showAdminToast("YouTube stream configured.", "info");
-    } finally {
-      setIsFetchingYoutubeMeta(false);
-    }
-  };
-
   const startEditSong = (song: Song) => {
     setEditingSongId(song.id);
     setTitle(song.title);
@@ -514,13 +464,6 @@ function AdminApp() {
     setImageUrl(song.imageUrl);
     setDuration(song.duration);
     setSelectedCategories(song.categories || []);
-    if (song.isYoutube || song.youtubeId || song.audioUrl?.includes("youtube")) {
-      setUploadMode("youtube");
-      setYoutubeUrlInput(song.youtubeId ? `https://www.youtube.com/watch?v=${song.youtubeId}` : "");
-    } else {
-      setUploadMode("direct");
-      setYoutubeUrlInput("");
-    }
     setStatusMessage(`Editing track: "${song.title}"`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -532,7 +475,6 @@ function AdminApp() {
     setAlbum("");
     setAudioUrl("");
     setImageUrl("");
-    setYoutubeUrlInput("");
     setDuration(0);
     setSelectedCategories([]);
     setUploadProgress({});
@@ -851,22 +793,25 @@ function AdminApp() {
     setIsSubmitting(true);
     setStatusMessage(editingSongId ? "Updating track in database..." : "Saving track to sk edz database...");
 
-    const ytId = extractYouTubeId(youtubeUrlInput) || extractYouTubeId(audioUrl);
-    const isYoutubeTrack = uploadMode === "youtube" || !!ytId || audioUrl.includes("youtube-stream");
-
     try {
+      const matchedArtist = artistsList.find(
+        (a) =>
+          a.id === selectedArtistId ||
+          a.name.trim().toLowerCase() === artist.trim().toLowerCase()
+      );
+
       const songData: Partial<Song> & Record<string, any> = {
         title,
         artist,
-        album: album || (isYoutubeTrack ? "YouTube Track" : "Single"),
+        artistId: matchedArtist?.id || selectedArtistId || null,
+        artistImage: matchedArtist?.imageUrl || selectedArtistImage || null,
+        album: album || "Single",
         audioUrl,
-        imageUrl: imageUrl || (ytId ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg` : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?q=80&w=600&auto=format&fit=crop"),
+        imageUrl: imageUrl || matchedArtist?.imageUrl || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?q=80&w=600&auto=format&fit=crop",
         duration: duration || 180, // Fallback to 3 minutes
         createdAt: Date.now(),
         uploadedBy: auth.currentUser?.uid || "admin",
-        categories: selectedCategories,
-        isYoutube: isYoutubeTrack,
-        ...(ytId ? { youtubeId: ytId } : {})
+        categories: selectedCategories
       };
 
       if (editingSongId) {
@@ -883,10 +828,11 @@ function AdminApp() {
       // Clear inputs
       setTitle("");
       setArtist("");
+      setSelectedArtistId(null);
+      setSelectedArtistImage(null);
       setAlbum("");
       setAudioUrl("");
       setImageUrl("");
-      setYoutubeUrlInput("");
       setDuration(0);
       setSelectedCategories([]);
       setUploadProgress({});
@@ -1084,6 +1030,122 @@ function AdminApp() {
 
     return () => unsubscribe();
   }, []);
+
+  // Real-time Artists Collection Subscription
+  useEffect(() => {
+    setLoadingArtists(true);
+    const q = query(collection(db, "artists"), orderBy("name", "asc"));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: ArtistProfile[] = [];
+        snapshot.forEach((d) => {
+          list.push({ id: d.id, ...d.data() } as ArtistProfile);
+        });
+        setArtistsList(list);
+        setLoadingArtists(false);
+      },
+      (err) => {
+        console.warn("Artists collection query with orderBy failed, falling back to unordered:", err);
+        const fallbackUnsub = onSnapshot(collection(db, "artists"), (snap) => {
+          const list: ArtistProfile[] = [];
+          snap.forEach((d) => {
+            list.push({ id: d.id, ...d.data() } as ArtistProfile);
+          });
+          list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+          setArtistsList(list);
+          setLoadingArtists(false);
+        });
+        return () => fallbackUnsub();
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Handler to Create or Update an Artist Profile
+  const handleSaveArtistProfile = async (data: Partial<ArtistProfile>, id?: string) => {
+    try {
+      if (id) {
+        await updateDoc(doc(db, "artists", id), {
+          ...data,
+          updatedAt: Date.now()
+        });
+        showAdminToast(`Artist profile "${data.name}" updated! ✨`, "success");
+      } else {
+        await addDoc(collection(db, "artists"), {
+          ...data,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        });
+        showAdminToast(`Artist profile "${data.name}" published! 🌟`, "success");
+      }
+    } catch (err: any) {
+      console.error("Failed to save artist profile:", err);
+      showAdminToast(`Error saving artist: ${err.message || "Failed"}`, "error");
+      throw err;
+    }
+  };
+
+  // Handler to Delete an Artist Profile
+  const handleDeleteArtistProfile = async (artistId: string) => {
+    try {
+      await deleteDoc(doc(db, "artists", artistId));
+      showAdminToast("Artist profile deleted from database.", "info");
+    } catch (err: any) {
+      console.error("Failed to delete artist profile:", err);
+      showAdminToast(`Failed to delete: ${err.message}`, "error");
+      throw err;
+    }
+  };
+
+  // Handler to Multi-Assign / Link Existing Songs to an Artist Profile
+  const handleAssignSongsToArtist = async (
+    artistProfile: ArtistProfile,
+    songIdsToAssign: string[]
+  ) => {
+    if (!artistProfile || !artistProfile.id) return;
+    try {
+      if (songIdsToAssign.length === 0) {
+        showAdminToast("No tracks selected to assign.", "info");
+        return;
+      }
+
+      const batch = writeBatch(db);
+      songIdsToAssign.forEach((songId) => {
+        const songRef = doc(db, "songs", songId);
+        batch.update(songRef, {
+          artist: artistProfile.name,
+          artistId: artistProfile.id,
+          artistImage: artistProfile.imageUrl || null,
+          updatedAt: Date.now()
+        });
+      });
+
+      await batch.commit();
+      showAdminToast(
+        `Successfully linked ${songIdsToAssign.length} song${songIdsToAssign.length === 1 ? "" : "s"} to ${artistProfile.name}! 🎵✨`,
+        "success"
+      );
+    } catch (err: any) {
+      console.error("Failed to assign songs to artist:", err);
+      showAdminToast(`Failed to assign tracks: ${err.message || "Database error"}`, "error");
+      throw err;
+    }
+  };
+
+  // Bulk Delete Reports Handler (tani tani yavum & motha ma vum)
+  const handleBulkDeleteReports = async (reportIds: string[]) => {
+    if (!reportIds || reportIds.length === 0) return;
+    try {
+      await Promise.all(reportIds.map((id) => deleteDoc(doc(db, "reports", id))));
+      showAdminToast(`Successfully deleted ${reportIds.length} report document${reportIds.length === 1 ? "" : "s"}! 🗑️`, "success");
+    } catch (err: any) {
+      console.error("Failed to bulk delete reports:", err);
+      showAdminToast(`Bulk delete error: ${err.message || "Failed"}`, "error");
+      throw err;
+    }
+  };
 
   // Update Report Status & Dispatch In-App Notification to User
   const handleUpdateReportStatus = async (
@@ -1375,6 +1437,23 @@ function AdminApp() {
           </button>
 
           <button
+            onClick={() => setActiveTab("artists")}
+            className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "artists"
+                ? "bg-gradient-to-r from-purple-500 via-pink-500 to-indigo-600 text-white shadow-lg shadow-purple-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>Artist Profiles</span>
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md font-bold ml-1 ${
+              activeTab === "artists" ? "bg-black/20 text-white" : "bg-purple-500/20 text-purple-300"
+            }`}>
+              {artistsList.length}
+            </span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("keys")}
             className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
               activeTab === "keys"
@@ -1441,98 +1520,6 @@ function AdminApp() {
               </div>
 
               <form onSubmit={handleAddSong} className="space-y-4">
-                {/* Upload Mode Switcher: Separate YouTube vs Direct MP3 Upload Sections */}
-                <div className="flex p-1 bg-black/40 rounded-2xl border border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => setUploadMode("youtube")}
-                    className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 ${
-                      uploadMode === "youtube"
-                        ? "bg-red-500/20 text-red-400 border border-red-500/30 shadow-md shadow-red-500/10"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    <Youtube className="w-4 h-4 text-red-400" />
-                    <span>YouTube Track (Audio Only)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setUploadMode("direct")}
-                    className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 ${
-                      uploadMode === "direct"
-                        ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 shadow-md shadow-cyan-500/10"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    <FileAudio className="w-4 h-4 text-cyan-400" />
-                    <span>Direct MP3 / File</span>
-                  </button>
-                </div>
-
-                {/* Section A: YouTube Link Input with 1-Click Metadata & Stream Extraction */}
-                {uploadMode === "youtube" && (
-                  <div className="border border-red-500/25 bg-red-500/5 rounded-2xl p-4 space-y-3.5 animate-fade-in shadow-inner">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-red-400 uppercase tracking-wider flex items-center space-x-1.5 font-mono">
-                        <Youtube className="w-4 h-4 text-red-400" />
-                        <span>YouTube Video / Song URL *</span>
-                      </label>
-                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 font-mono font-bold border border-red-500/30">
-                        PURE AUDIO NO-ADS
-                      </span>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <div className="relative flex-1">
-                        <input
-                          type="text"
-                          placeholder="Paste YouTube link (e.g. https://youtu.be/... or watch?v=...)"
-                          value={youtubeUrlInput}
-                          onChange={(e) => {
-                            setYoutubeUrlInput(e.target.value);
-                            const extracted = extractYouTubeId(e.target.value);
-                            if (extracted) {
-                              setAudioUrl(`/api/youtube-stream?id=${extracted}&audioOnly=true`);
-                              if (!imageUrl) {
-                                setImageUrl(`https://img.youtube.com/vi/${extracted}/hqdefault.jpg`);
-                                setImageStatus("available");
-                              }
-                            }
-                          }}
-                          className="w-full px-3.5 py-2.5 bg-black/50 border border-red-500/30 focus:border-red-400 rounded-xl text-slate-100 placeholder-slate-500 text-xs outline-none transition-all focus:ring-1 focus:ring-red-400/40"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleFetchYouTubeMeta()}
-                        disabled={isFetchingYoutubeMeta || !youtubeUrlInput.trim()}
-                        className="px-3.5 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center space-x-1.5 flex-shrink-0 shadow-md shadow-red-500/25 active:scale-95"
-                      >
-                        {isFetchingYoutubeMeta ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Extracting...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>Auto Extract</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    <div className="p-3 rounded-xl bg-black/40 border border-red-500/15 text-[11px] text-slate-300 space-y-1.5">
-                      <div className="flex items-center space-x-2 text-red-300 font-semibold">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                        <span>Ad-Free Audio Streaming Proxy Ready</span>
-                      </div>
-                      <p className="text-[10px] text-slate-400 leading-relaxed">
-                        YouTube video and advertisement banners are removed. Only high-bitrate audio will stream smoothly inside the skplayer background audio engine with equalizer and bass boost support.
-                      </p>
-                    </div>
-                  </div>
-                )}
                 {/* Search & Auto-Fill from Existing Library */}
                 <div className="relative border border-cyan-500/20 bg-cyan-500/5 rounded-2xl p-3.5 space-y-2">
                   <label className="block text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center justify-between font-mono">
@@ -1645,17 +1632,212 @@ function AdminApp() {
                   />
                 </div>
 
-                {/* Artist */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Artist Name *</label>
-                  <input 
-                    type="text" 
-                    required
-                    placeholder="e.g. Anirudh Ravichander" 
-                    value={artist}
-                    onChange={(e) => setArtist(e.target.value)}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 focus:border-cyan-400/50 rounded-2xl text-slate-100 outline-none transition-all placeholder-slate-500 backdrop-blur-md text-sm"
-                  />
+                {/* Artist Name & Searchable Artist Profile Picker */}
+                <div className="space-y-2 relative">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                      Artist Name *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("artists")}
+                      className="text-[11px] font-mono text-purple-400 hover:text-purple-300 hover:underline flex items-center space-x-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Manage Artist Profiles ({artistsList.length})</span>
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. Anirudh Ravichander (Search or type new)" 
+                      value={artist}
+                      onFocus={() => setShowArtistDropdown(true)}
+                      onChange={(e) => {
+                        setArtist(e.target.value);
+                        setArtistFilterQuery(e.target.value);
+                        setShowArtistDropdown(true);
+                        // Check if typed name matches any profile
+                        const exact = artistsList.find(
+                          (a) => a.name.trim().toLowerCase() === e.target.value.trim().toLowerCase()
+                        );
+                        if (exact) {
+                          setSelectedArtistId(exact.id);
+                          setSelectedArtistImage(exact.imageUrl);
+                        } else {
+                          setSelectedArtistId(null);
+                          setSelectedArtistImage(null);
+                        }
+                      }}
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 focus:border-purple-400/60 rounded-2xl text-slate-100 outline-none transition-all placeholder-slate-500 backdrop-blur-md text-sm focus:ring-1 focus:ring-purple-400/30"
+                    />
+
+                    {artistsList.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowArtistDropdown(!showArtistDropdown)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-purple-300 text-xs font-mono transition-colors"
+                        title="Browse Artist Profiles"
+                      >
+                        <Users className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Searchable Artist Profiles Dropdown Menu */}
+                  {showArtistDropdown && artistsList.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 z-40 mt-1.5 bg-[#0e1122]/95 border border-purple-500/30 rounded-2xl shadow-[0_15px_40px_rgba(0,0,0,0.85)] overflow-hidden max-h-60 overflow-y-auto custom-scrollbar p-2 space-y-1 backdrop-blur-2xl">
+                      <div className="px-2 py-1 text-[10px] font-mono text-purple-400 flex items-center justify-between border-b border-white/10 mb-1">
+                        <span>SELECT ARTIST PROFILE ({artistsList.length})</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowArtistDropdown(false)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          ✕
+                        </button>
+                      </div>
+
+                      {artistsList
+                        .filter((a) =>
+                          !artistFilterQuery.trim() ||
+                          a.name.toLowerCase().includes(artistFilterQuery.toLowerCase()) ||
+                          (a.genre && a.genre.toLowerCase().includes(artistFilterQuery.toLowerCase()))
+                        )
+                        .map((art) => (
+                          <button
+                            key={art.id}
+                            type="button"
+                            onClick={() => {
+                              setArtist(art.name);
+                              setSelectedArtistId(art.id);
+                              setSelectedArtistImage(art.imageUrl);
+                              if (!imageUrl && art.imageUrl) {
+                                setImageUrl(art.imageUrl);
+                                setImageStatus("available");
+                              }
+                              setShowArtistDropdown(false);
+                              setStatusMessage(`Linked artist profile "${art.name}"! ✨`);
+                            }}
+                            className="w-full flex items-center justify-between p-2 hover:bg-purple-500/15 rounded-xl transition-all text-left group"
+                          >
+                            <div className="flex items-center space-x-3 min-w-0">
+                              <div className="w-9 h-9 rounded-xl overflow-hidden bg-black/50 border border-white/10 flex-shrink-0">
+                                {art.imageUrl ? (
+                                  <img
+                                    src={art.imageUrl}
+                                    alt={art.name}
+                                    className="w-full h-full object-cover"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center bg-purple-500/20 text-purple-300 font-bold text-xs">
+                                    {art.name.charAt(0)}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-slate-100 group-hover:text-purple-300 truncate flex items-center space-x-1.5">
+                                  <span>{art.name}</span>
+                                  {art.verified && (
+                                    <span className="text-[9px] text-cyan-400 font-bold">✓</span>
+                                  )}
+                                </p>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  {art.genre || "Artist"} {art.monthlyListeners ? `• ${art.monthlyListeners}` : ""}
+                                </p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-mono px-2 py-1 rounded-lg bg-purple-500/10 text-purple-300 border border-purple-500/20 group-hover:bg-purple-500/30 whitespace-nowrap">
+                              Select ✓
+                            </span>
+                          </button>
+                        ))}
+
+                      {artistsList.filter((a) =>
+                        !artistFilterQuery.trim() ||
+                        a.name.toLowerCase().includes(artistFilterQuery.toLowerCase()) ||
+                        (a.genre && a.genre.toLowerCase().includes(artistFilterQuery.toLowerCase()))
+                      ).length === 0 && (
+                        <div className="p-3 text-center text-xs text-slate-400">
+                          <p>No artist matching "{artistFilterQuery}".</p>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("artists")}
+                            className="mt-1.5 text-xs text-purple-400 hover:underline font-mono"
+                          >
+                            + Create New Profile in Artists Tab
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Selected Artist Profile Link Badge */}
+                  {selectedArtistId && (
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-200 text-xs">
+                      <div className="flex items-center space-x-2 min-w-0">
+                        {selectedArtistImage && (
+                          <img
+                            src={selectedArtistImage}
+                            alt="Artist"
+                            className="w-6 h-6 rounded-full object-cover border border-purple-400/40 flex-shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
+                        <span className="font-bold truncate font-mono text-[11px]">
+                          Linked Profile: {artist}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArtistId(null);
+                          setSelectedArtistImage(null);
+                        }}
+                        className="text-[10px] text-purple-400 hover:text-white px-2 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/40 font-mono transition-colors"
+                      >
+                        Unlink
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Quick Clickable Chips of Registered Artists */}
+                  {artistsList.length > 0 && !selectedArtistId && (
+                    <div className="space-y-1 pt-1">
+                      <div className="text-[10px] font-mono text-slate-400">Quick Select Artist Profile:</div>
+                      <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto custom-scrollbar">
+                        {artistsList.slice(0, 8).map((art) => (
+                          <button
+                            key={art.id}
+                            type="button"
+                            onClick={() => {
+                              setArtist(art.name);
+                              setSelectedArtistId(art.id);
+                              setSelectedArtistImage(art.imageUrl);
+                              if (!imageUrl && art.imageUrl) {
+                                setImageUrl(art.imageUrl);
+                                setImageStatus("available");
+                              }
+                            }}
+                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-white/5 hover:bg-purple-500/20 border border-white/10 hover:border-purple-500/30 text-slate-300 hover:text-purple-200 text-[11px] transition-all"
+                          >
+                            {art.imageUrl && (
+                              <img
+                                src={art.imageUrl}
+                                alt={art.name}
+                                className="w-3.5 h-3.5 rounded-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                            )}
+                            <span>{art.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Album */}
@@ -1785,8 +1967,7 @@ function AdminApp() {
                   )}
                 </div>
 
-                {/* Section B: Direct Audio Stream Source (Only for Direct Mode) */}
-                {uploadMode === "direct" && (
+                {/* Audio Stream Source */}
                   <div className="border border-cyan-500/20 bg-cyan-500/5 rounded-2xl p-4 animate-fade-in space-y-3">
                     <div className="flex justify-between items-center">
                       <label className="block text-xs font-semibold text-cyan-400 uppercase tracking-wider font-mono">
@@ -1831,13 +2012,12 @@ function AdminApp() {
                       </div>
                     )}
                   </div>
-                )}
 
                 {/* Cover Image URL & File Upload */}
                 <div className="border border-white/5 rounded-2xl p-4 bg-black/20 space-y-3">
                   <div className="flex justify-between items-center">
                     <label className="block text-xs font-semibold text-pink-400 uppercase tracking-wider">
-                      Cover Image Artwork {uploadMode === "youtube" ? "(Auto Extracted from YouTube)" : "(Optional)"}
+                      Cover Image Artwork (Optional)
                     </label>
                     <div className="flex items-center space-x-1.5">
                       {imageStatus === "available" && (
@@ -2094,12 +2274,7 @@ function AdminApp() {
                               {song.title}
                             </h4>
                             <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
-                            {song.isYoutube && (
-                              <span className="inline-flex items-center space-x-1 mt-1 mr-1 text-[9px] font-mono px-2 py-0.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded-full font-bold">
-                                <Youtube className="w-2.5 h-2.5 text-red-400" />
-                                <span>YouTube Audio</span>
-                              </span>
-                            )}
+
                             {song.album && (
                               <span className="inline-block mt-1 mr-1 text-[9px] font-mono px-2 py-0.5 bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 rounded-full">
                                 {song.album}
@@ -2446,13 +2621,42 @@ function AdminApp() {
           </div>
         )}
 
-        {/* Tab 3: Reports & Feedback Manager */}
+        {/* Tab 2: Artist Profiles Manager */}
+        {activeTab === "artists" && (
+          <AdminArtistsManager
+            artists={artistsList}
+            songs={songs}
+            loading={loadingArtists}
+            onSaveArtist={handleSaveArtistProfile}
+            onDeleteArtist={handleDeleteArtistProfile}
+            onAssignSongsToArtist={handleAssignSongsToArtist}
+            onSelectArtistForSongUpload={(artistName, artistImg) => {
+              setArtist(artistName);
+              const found = artistsList.find((a) => a.name.toLowerCase() === artistName.toLowerCase());
+              if (found) {
+                setSelectedArtistId(found.id);
+                setSelectedArtistImage(found.imageUrl);
+              }
+              if (artistImg && !imageUrl) {
+                setImageUrl(artistImg);
+                setImageStatus("available");
+              }
+              setActiveTab("songs");
+              showAdminToast(`Selected artist "${artistName}" for song upload! 🎵`, "info");
+            }}
+            onUploadImage={(file) => uploadFileToServer(file, "image")}
+            onShowToast={showAdminToast}
+          />
+        )}
+
+        {/* Tab 4: Reports & Feedback Manager */}
         {activeTab === "reports" && (
           <AdminReportsManager
             reports={reports}
             loading={loadingReports}
             onUpdateStatus={handleUpdateReportStatus}
             onDeleteReport={handleDeleteReport}
+            onBulkDeleteReports={handleBulkDeleteReports}
             isUpdating={isUpdatingReport}
             isDeletingId={isDeletingReportId}
             onShowToast={showAdminToast}

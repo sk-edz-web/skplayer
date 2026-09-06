@@ -2,6 +2,8 @@ export interface Song {
   id: string;
   title: string;
   artist: string;
+  artistId?: string;
+  artistImage?: string;
   album?: string;
   audioUrl: string;
   imageUrl: string;
@@ -9,8 +11,19 @@ export interface Song {
   createdAt: number;
   uploadedBy?: string;
   categories?: string[];
-  isYoutube?: boolean;
-  youtubeId?: string;
+}
+
+export interface ArtistProfile {
+  id: string;
+  name: string;
+  imageUrl: string;
+  bio?: string;
+  genre?: string;
+  monthlyListeners?: string | number;
+  instagram?: string;
+  spotify?: string;
+  createdAt: number;
+  updatedAt?: number;
 }
 
 export interface Playlist {

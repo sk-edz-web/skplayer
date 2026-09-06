@@ -4,7 +4,7 @@ import {
   ReportStatus 
 } from "../types";
 import { db } from "../firebase";
-import { collection, addDoc } from "firebase/firestore";
+import { collection, addDoc, doc, deleteDoc } from "firebase/firestore";
 import {
   AlertTriangle,
   Crown,
@@ -37,7 +37,9 @@ import {
   PhoneCall,
   MessageCircle,
   Copy,
-  Mail
+  Mail,
+  CheckSquare,
+  Square
 } from "lucide-react";
 
 interface AdminReportsManagerProps {
@@ -50,6 +52,7 @@ interface AdminReportsManagerProps {
     notes?: string
   ) => Promise<void>;
   onDeleteReport: (reportId: string) => Promise<void>;
+  onBulkDeleteReports?: (reportIds: string[]) => Promise<void>;
   isUpdating: boolean;
   isDeletingId: string | null;
   onShowToast: (text: string, type?: "success" | "info" | "error") => void;
@@ -60,6 +63,7 @@ export default function AdminReportsManager({
   loading,
   onUpdateStatus,
   onDeleteReport,
+  onBulkDeleteReports,
   isUpdating,
   isDeletingId,
   onShowToast
@@ -69,6 +73,17 @@ export default function AdminReportsManager({
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  // Multi-Selection and Bulk Delete States
+  const [selectedReportIds, setSelectedReportIds] = useState<string[]>([]);
+  const [isBulkDeleting, setIsBulkDeleting] = useState<boolean>(false);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    action: () => Promise<void>;
+    count: number;
+  } | null>(null);
 
   const copyToClipboard = (text: string, label: string) => {
     if (!text) return;
@@ -213,6 +228,93 @@ export default function AdminReportsManager({
     } finally {
       setIsSendingNotif(false);
     }
+  };
+
+  // Bulk Selection Helpers
+  const handleToggleSelectReport = (reportId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedReportIds((prev) =>
+      prev.includes(reportId) ? prev.filter((id) => id !== reportId) : [...prev, reportId]
+    );
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allFilteredIds = filteredReports.map((r) => r.id);
+    const areAllSelected = allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedReportIds.includes(id));
+    if (areAllSelected) {
+      setSelectedReportIds((prev) => prev.filter((id) => !allFilteredIds.includes(id)));
+    } else {
+      setSelectedReportIds((prev) => Array.from(new Set([...prev, ...allFilteredIds])));
+    }
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedReportIds([]);
+  };
+
+  // Execute Bulk Delete
+  const executeBulkDelete = async (idsToDelete: string[]) => {
+    if (idsToDelete.length === 0) return;
+    setIsBulkDeleting(true);
+    try {
+      if (onBulkDeleteReports) {
+        await onBulkDeleteReports(idsToDelete);
+      } else {
+        const promises = idsToDelete.map((id) => deleteDoc(doc(db, "reports", id)));
+        await Promise.all(promises);
+        onShowToast(`Successfully deleted ${idsToDelete.length} reports! 🗑️`, "success");
+      }
+      setSelectedReportIds((prev) => prev.filter((id) => !idsToDelete.includes(id)));
+      setConfirmDeleteModal(null);
+    } catch (err: any) {
+      console.error("Bulk delete failed:", err);
+      onShowToast(`Failed to delete reports: ${err.message || "Error"}`, "error");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  // Trigger Modal for Selected Delete
+  const requestDeleteSelected = () => {
+    if (selectedReportIds.length === 0) return;
+    setConfirmDeleteModal({
+      open: true,
+      title: "Delete Selected Reports",
+      description: `Are you sure you want to permanently delete ${selectedReportIds.length} selected report(s)? This action cannot be undone.`,
+      count: selectedReportIds.length,
+      action: () => executeBulkDelete(selectedReportIds)
+    });
+  };
+
+  // Trigger Modal for All Resolved (Done) Delete
+  const requestDeleteAllResolved = () => {
+    const resolvedIds = reports.filter((r) => r.status === "done").map((r) => r.id);
+    if (resolvedIds.length === 0) {
+      onShowToast("No resolved (Done) reports found to delete.", "info");
+      return;
+    }
+    setConfirmDeleteModal({
+      open: true,
+      title: "Delete All Resolved Reports",
+      description: `Are you sure you want to permanently delete all ${resolvedIds.length} resolved (Done) reports?`,
+      count: resolvedIds.length,
+      action: () => executeBulkDelete(resolvedIds)
+    });
+  };
+
+  // Trigger Modal for All Reports Delete
+  const requestDeleteAllReports = () => {
+    if (reports.length === 0) {
+      onShowToast("No reports found to delete.", "info");
+      return;
+    }
+    setConfirmDeleteModal({
+      open: true,
+      title: "Delete ALL Reports in Database",
+      description: `WARNING: This will permanently delete ALL ${reports.length} report documents from Firestore. Are you sure you want to clear everything?`,
+      count: reports.length,
+      action: () => executeBulkDelete(reports.map((r) => r.id))
+    });
   };
 
   // Helper to check if a report is a contact/call/message request or has phone
@@ -570,7 +672,7 @@ export default function AdminReportsManager({
 
       {/* 3. Reports List Container */}
       <div className="bg-white/5 border border-white/10 rounded-3xl p-5 sm:p-6 backdrop-blur-xl shadow-2xl space-y-4">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
           <div>
             <h2 className="text-lg font-bold text-slate-100 flex items-center space-x-2">
               <MessageSquare className="w-5 h-5 text-cyan-400" />
@@ -579,6 +681,8 @@ export default function AdminReportsManager({
                   ? "VIP Priority Reports Queue"
                   : subTab === "normal"
                   ? "Standard User Reports"
+                  : subTab === "contacts"
+                  ? "Call & Contact Requests"
                   : "All Incident Reports"}
               </span>
               <span className="text-xs font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-md">
@@ -586,10 +690,98 @@ export default function AdminReportsManager({
               </span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Long press or click the 3-dot menu on any report to update status, review details, or dispatch real-time in-app user notifications.
+              Select reports for bulk actions, click cards for full details, or use instant delete on any item.
             </p>
           </div>
+
+          {/* Quick Bulk Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            {doneCount > 0 && (
+              <button
+                type="button"
+                onClick={requestDeleteAllResolved}
+                className="px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-300 text-xs font-mono font-bold flex items-center space-x-1.5 transition-all"
+                title="Delete all resolved reports marked as Done"
+              >
+                <CheckCheck className="w-3.5 h-3.5" />
+                <span>Clear Done ({doneCount})</span>
+              </button>
+            )}
+
+            {reports.length > 0 && (
+              <button
+                type="button"
+                onClick={requestDeleteAllReports}
+                className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-mono font-bold flex items-center space-x-1.5 transition-all"
+                title="Delete all reports from database"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete All ({reports.length})</span>
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Bulk Selection Management Bar */}
+        {filteredReports.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white/[0.02] border border-white/10 rounded-2xl">
+            <div className="flex items-center space-x-3">
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="flex items-center space-x-2 text-xs font-mono text-slate-300 hover:text-cyan-400 transition-colors"
+              >
+                {filteredReports.length > 0 && filteredReports.every((r) => selectedReportIds.includes(r.id)) ? (
+                  <CheckSquare className="w-4 h-4 text-cyan-400" />
+                ) : (
+                  <Square className="w-4 h-4 text-slate-500" />
+                )}
+                <span>
+                  {filteredReports.every((r) => selectedReportIds.includes(r.id))
+                    ? "Deselect All Filtered"
+                    : `Select All Filtered (${filteredReports.length})`}
+                </span>
+              </button>
+
+              {selectedReportIds.length > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-mono font-bold">
+                  {selectedReportIds.length} Selected
+                </span>
+              )}
+            </div>
+
+            {selectedReportIds.length > 0 && (
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handleDeselectAll}
+                  className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white text-xs font-mono transition-all"
+                >
+                  Clear Selection
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isBulkDeleting}
+                  onClick={requestDeleteSelected}
+                  className="px-4 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 hover:text-red-200 text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-[0_0_15px_rgba(239,68,68,0.2)] disabled:opacity-50"
+                >
+                  {isBulkDeleting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Selected ({selectedReportIds.length})</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Loading State */}
         {loading ? (
@@ -620,6 +812,7 @@ export default function AdminReportsManager({
               const badge = getStatusBadge(report.status || "open");
               const StatusIcon = badge.icon;
               const isDropdownOpen = activeDropdownId === report.id;
+              const isSelected = selectedReportIds.includes(report.id);
 
               return (
                 <div
@@ -630,7 +823,9 @@ export default function AdminReportsManager({
                   onMouseUp={handleTouchEnd}
                   onClick={() => handleCardClick(report)}
                   className={`relative rounded-2xl p-5 border transition-all duration-300 cursor-pointer select-none group ${
-                    isVip
+                    isSelected
+                      ? "bg-cyan-500/10 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.2)]"
+                      : isVip
                       ? "bg-gradient-to-br from-amber-500/[0.07] via-yellow-600/[0.03] to-transparent border-amber-500/30 hover:border-amber-400 shadow-[0_4px_25px_rgba(245,158,11,0.08)] hover:translate-y-[-2px]"
                       : "bg-white/[0.03] hover:bg-white/[0.06] border-white/10 hover:border-cyan-400/40 hover:translate-y-[-2px]"
                   }`}
@@ -638,6 +833,21 @@ export default function AdminReportsManager({
                   {/* Top Bar: User details, VIP tag, Status, and 3-Dot Button */}
                   <div className="flex items-start justify-between gap-4 mb-3">
                     <div className="flex items-center space-x-3 min-w-0">
+                      
+                      {/* Checkbox for Bulk Selection */}
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleSelectReport(report.id, e)}
+                        className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                        title={isSelected ? "Deselect report" : "Select report for bulk action"}
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-4 h-4 text-cyan-400" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-500" />
+                        )}
+                      </button>
+
                       {/* Avatar */}
                       <div className={`w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center flex-shrink-0 border ${
                         isVip ? "border-amber-400 bg-amber-500/20 shadow-[0_0_12px_rgba(245,158,11,0.3)]" : "border-white/10 bg-white/5"
@@ -681,13 +891,31 @@ export default function AdminReportsManager({
                       </div>
                     </div>
 
-                    {/* Right side: Status Tag & 3-Dot Dropdown */}
+                    {/* Right side: Status Tag, Direct Delete & 3-Dot Dropdown */}
                     <div className="flex items-center space-x-2 flex-shrink-0 report-dropdown-wrapper">
                       {/* Current Status Pill */}
                       <span className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-xl text-[10px] font-mono font-bold border ${badge.className}`}>
                         <StatusIcon className="w-3 h-3" />
                         <span>{badge.labelEnglish}</span>
                       </span>
+
+                      {/* Instant Delete Button for Individual Report ("tani tani yavum") */}
+                      <button
+                        type="button"
+                        disabled={isDeletingId === report.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteReport(report.id);
+                        }}
+                        className="w-8 h-8 rounded-xl bg-red-500/10 hover:bg-red-500/25 border border-red-500/20 hover:border-red-500/40 text-red-400 hover:text-red-300 flex items-center justify-center transition-all"
+                        title="Delete this single report"
+                      >
+                        {isDeletingId === report.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                      </button>
 
                       {/* 3-Dot Action Button */}
                       <div className="relative">
@@ -1420,6 +1648,65 @@ export default function AdminReportsManager({
                   <>
                     <Send className="w-4 h-4 text-black" />
                     <span>Send Notification to User 🚀</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk / Batch Deletion Confirmation Modal Dialog */}
+      {confirmDeleteModal && (
+        <div
+          className="fixed inset-0 z-[130] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => !isBulkDeleting && setConfirmDeleteModal(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#0e1122] border border-red-500/40 rounded-3xl p-6 shadow-[0_20px_60px_rgba(0,0,0,0.9)] space-y-4 animate-in fade-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center space-x-3 text-red-400">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">{confirmDeleteModal.title}</h3>
+                <p className="text-xs text-red-300 font-mono">
+                  {confirmDeleteModal.count} document{confirmDeleteModal.count === 1 ? "" : "s"} will be deleted
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed bg-black/40 p-3.5 rounded-xl border border-white/10">
+              {confirmDeleteModal.description}
+            </p>
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={() => setConfirmDeleteModal(null)}
+                className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={confirmDeleteModal.action}
+                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold font-mono transition-all shadow-[0_0_20px_rgba(239,68,68,0.4)] flex items-center space-x-2 disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Deleting documents...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Confirm & Delete Permanently 🗑️</span>
                   </>
                 )}
               </button>

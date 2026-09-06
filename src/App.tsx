@@ -190,63 +190,11 @@ function parseID3Tags(buffer: ArrayBuffer): ID3Metadata {
   return result;
 }
 
-// Helper to extract YouTube Video ID from any standard YT link
-function getYouTubeId(url: string): string | null {
-  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-  const match = url.match(regExp);
-  return (match && match[2].length === 11) ? match[2] : null;
-}
-
-// Helper to resolve clean audio stream URL (direct MP3, blob, or ad-free YouTube audio stream)
+// Helper to resolve clean audio stream URL
 function getSongStreamUrl(song: Song | null): string {
   if (!song) return "";
-  if (song.isYoutube && song.youtubeId) {
-    return `/api/youtube-stream?id=${song.youtubeId}&audioOnly=true`;
-  }
-  if (song.youtubeId) {
-    return `/api/youtube-stream?id=${song.youtubeId}&audioOnly=true`;
-  }
-  if (song.audioUrl) {
-    if (song.audioUrl.startsWith("/api/youtube-stream")) {
-      return song.audioUrl;
-    }
-    const ytId = getYouTubeId(song.audioUrl);
-    if (ytId) {
-      return `/api/youtube-stream?id=${ytId}&audioOnly=true`;
-    }
-    return song.audioUrl;
-  }
-  return "";
+  return song.audioUrl || "";
 }
-
-// Fetch YouTube video title via NoEmbed or public OEmbed APIs
-const fetchYouTubeTitle = async (videoId: string): Promise<string | null> => {
-  try {
-    const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.title) {
-        return data.title;
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to fetch title from NoEmbed:", e);
-  }
-
-  try {
-    const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.title) {
-        return data.title;
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to fetch title from YouTube OEmbed:", e);
-  }
-
-  return null;
-};
 
 export default function App() {
   // Navigation & View States
@@ -953,31 +901,7 @@ export default function App() {
     localStorage.setItem("skplayer_saved_videos", JSON.stringify(savedVideos));
   }, [savedVideos]);
 
-  // Automatically fetch YouTube title when URL is entered for saving
-  useEffect(() => {
-    const videoId = getYouTubeId(youtubeUrlInput);
-    if (videoId) {
-      fetchYouTubeTitle(videoId).then((title) => {
-        if (title) {
-          setYoutubeTitleInput(title);
-        }
-      });
-    }
-  }, [youtubeUrlInput]);
 
-  // Resolve YouTube video URL to our custom CORS proxy endpoint for Web Audio API EQ/Bass Boost compatibility
-  useEffect(() => {
-    if (currentVideo && currentVideo.type === "youtube") {
-      const videoId = getYouTubeId(currentVideo.url);
-      if (videoId) {
-        setResolvedYoutubeUrl(`/api/youtube-stream?id=${videoId}`);
-      } else {
-        setResolvedYoutubeUrl(null);
-      }
-    } else {
-      setResolvedYoutubeUrl(null);
-    }
-  }, [currentVideo]);
 
   // Check if we should prompt the user for a tutorial after they log in
   useEffect(() => {
@@ -1050,9 +974,7 @@ export default function App() {
           duration: data.duration || 0,
           createdAt: data.createdAt || Date.now(),
           uploadedBy: data.uploadedBy || "",
-          categories: data.categories || [],
-          isYoutube: data.isYoutube || false,
-          youtubeId: data.youtubeId || ""
+          categories: data.categories || []
         });
       });
       // Sort newest first
@@ -1316,7 +1238,9 @@ export default function App() {
     setCurrentQueue(queue);
     setCurrentSongIndex(index);
     setIsPlaying(true);
-    setIsBuffering(true);
+    setIsBuffering(false);
+
+
 
     if (audioRef.current) {
       // Lazy initialize Web Audio Equalizer on user action
@@ -1361,6 +1285,8 @@ export default function App() {
       return;
     }
 
+    const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
+
     if (!audioRef.current) return;
 
     // Lazy initialize Web Audio Equalizer on user action
@@ -1377,7 +1303,6 @@ export default function App() {
       }
       setIsVideoPlaying(false);
 
-      const activeSong = currentSongIndex !== -1 ? currentQueue[currentSongIndex] : null;
       if (activeSong && activeAudioIdRef.current !== activeSong.id) {
         activeAudioIdRef.current = activeSong.id;
         const streamUrl = getSongStreamUrl(activeSong);
@@ -1918,40 +1843,7 @@ export default function App() {
     setIsVideoPlaying(true);
   };
 
-  const handleAddYouTubeVideo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!youtubeUrlInput.trim()) return;
-    
-    const videoId = getYouTubeId(youtubeUrlInput);
-    if (!videoId) {
-      alert("Invalid YouTube URL. Please use a standard YouTube, Share, or Shorts link.");
-      return;
-    }
-    
-    setIsResolvingYoutube(true);
-    let title = youtubeTitleInput.trim();
-    if (!title) {
-      const fetchedTitle = await fetchYouTubeTitle(videoId);
-      title = fetchedTitle || `YouTube Track - ${videoId}`;
-    }
-    
-    const newVideo: VideoItem = {
-      id: `yt-${videoId}-${Date.now()}`,
-      userId: user?.uid || "guest",
-      title,
-      url: youtubeUrlInput,
-      type: "youtube",
-      thumbnailUrl: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
-      createdAt: Date.now()
-    };
-    
-    setSavedVideos(prev => [newVideo, ...prev]);
-    setYoutubeUrlInput("");
-    setYoutubeTitleInput("");
-    setIsResolvingYoutube(false);
-    
-    playVideoItem(newVideo);
-  };
+
 
   const handleAddMyMediaVideo = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2358,7 +2250,7 @@ export default function App() {
                             <img 
                               src={song.imageUrl} 
                               alt={song.title} 
-                              className="w-full h-full object-cover group-hover:scale-110 transition-all duration-500" 
+                              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
                               referrerPolicy="no-referrer"
                             />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -2454,7 +2346,7 @@ export default function App() {
                             <img 
                               src={song.imageUrl} 
                               alt={song.title} 
-                              className="w-full h-full object-cover group-hover:scale-115 transition-transform duration-500" 
+                              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
                               referrerPolicy="no-referrer"
                             />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -4493,6 +4385,8 @@ export default function App() {
         onClose={() => setIsNotificationsOpen(false)}
         notifications={userNotifications}
       />
+
+
 
     </div>
   );
